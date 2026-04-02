@@ -35,7 +35,7 @@ function decodePubkey(input: string): string | null {
 
 export function DirectoryPage() {
   useSeoMeta({
-    title: 'Directory — Bitchat',
+    title: 'Directory — Aeon',
     description: 'Search Nostr profiles',
   });
 

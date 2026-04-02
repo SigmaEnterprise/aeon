@@ -197,7 +197,7 @@ function MessageBubble({ msg }: { msg: DecryptedMsg }) {
 
 export function ShieldedPage() {
   useSeoMeta({
-    title: 'Private DMs — Bitchat',
+    title: 'Private DMs — Aeon',
     description: 'NIP-17 encrypted direct messages with NIP-44 + NIP-59 gift wraps',
   });
 

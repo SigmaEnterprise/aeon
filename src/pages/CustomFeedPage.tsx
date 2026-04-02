@@ -29,12 +29,12 @@ function decodePubkey(input: string): string | null {
 
 export function CustomFeedPage() {
   useSeoMeta({
-    title: 'Custom Feeds — Bitchat',
+    title: 'Custom Feeds — Aeon',
     description: 'Follow specific Nostr users',
   });
 
   const { toast } = useToast();
-  const [savedPubkeys, setSavedPubkeys] = useLocalStorage<string[]>('bitchat:custom-feed-pubkeys', []);
+  const [savedPubkeys, setSavedPubkeys] = useLocalStorage<string[]>('aeon:custom-feed-pubkeys', []);
   const [inputValue, setInputValue] = useState(savedPubkeys.join('\n'));
   const [activePubkeys, setActivePubkeys] = useState<string[]>(savedPubkeys);
 

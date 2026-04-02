@@ -20,7 +20,7 @@ import type { NostrEvent } from '@nostrify/nostrify';
 
 export function ProfilePage() {
   useSeoMeta({
-    title: 'Profile — Bitchat',
+    title: 'Profile — Aeon',
     description: 'Your Nostr profile',
   });
 
@@ -51,7 +51,7 @@ export function ProfilePage() {
         <div className="max-w-2xl mx-auto">
           <Card>
             <CardContent className="py-16 text-center space-y-4">
-              <p className="text-xl font-semibold">Welcome to Bitchat</p>
+              <p className="text-xl font-semibold">Welcome to Aeon</p>
               <p className="text-muted-foreground">Log in to view your profile and post notes</p>
               <div className="flex justify-center">
                 <LoginArea className="max-w-xs" />

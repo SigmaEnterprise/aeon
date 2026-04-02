@@ -21,7 +21,7 @@ import type { NostrEvent } from '@nostrify/nostrify';
 
 export function FeedPage() {
   useSeoMeta({
-    title: 'Feed — Bitchat',
+    title: 'Feed — Aeon',
     description: 'Global Nostr feed',
   });
 

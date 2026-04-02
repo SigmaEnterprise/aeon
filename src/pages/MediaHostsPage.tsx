@@ -58,7 +58,7 @@ export function MediaHostsPage() {
   const { user } = useCurrentUser();
   const { toast } = useToast();
 
-  const [hosts, setHosts] = useLocalStorage<MediaHostEntry[]>('bitchat:media-hosts', DEFAULT_HOSTS);
+  const [hosts, setHosts] = useLocalStorage<MediaHostEntry[]>('aeon:media-hosts', DEFAULT_HOSTS);
   const [probes, setProbes] = useState<Record<string, MediaHostProbe>>({});
   const [newUrl, setNewUrl] = useState('');
   const [newLabel, setNewLabel] = useState('');

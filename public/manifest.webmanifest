@@ -1,0 +1,19 @@
+{
+  "name": "Aeon — Nostr Client",
+  "short_name": "Aeon",
+  "description": "A privacy-first Nostr client with NIP-17 private DMs, NIP-44 encryption, lightning zaps, and full relay management.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d0d1a",
+  "theme_color": "#818cf8",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["social", "utilities"],
+  "lang": "en"
+}

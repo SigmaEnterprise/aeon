@@ -1,4 +1,4 @@
-# Bitchat — Full-Featured Nostr Client
+# ✦ Aeon — Full-Featured Nostr Client
 
 A modern, privacy-focused Nostr client built with React 19, TailwindCSS, shadcn/ui, and Nostrify.
 

@@ -67,10 +67,10 @@ async function decryptKey(password: string, salt: string, iv: string, data: stri
 
 type EncryptedKeyData = { salt: string; iv: string; data: string; pubkey: string; npub: string };
 
-const ENCRYPTED_KEY_STORAGE = 'bitchat:encrypted-key';
+const ENCRYPTED_KEY_STORAGE = 'aeon:encrypted-key';
 
 export function KeysPage() {
-  useSeoMeta({ title: 'Keys — Bitchat', description: 'Manage your Nostr keys' });
+  useSeoMeta({ title: 'Keys — Aeon', description: 'Manage your Nostr keys' });
 
   const { user } = useCurrentUser();
   const { toast } = useToast();

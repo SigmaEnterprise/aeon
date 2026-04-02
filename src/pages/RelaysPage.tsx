@@ -33,7 +33,7 @@ interface RelayStatusMap {
 }
 
 export function RelaysPage() {
-  useSeoMeta({ title: 'Relays — Bitchat', description: 'Manage Nostr relay connections' });
+  useSeoMeta({ title: 'Relays — Aeon', description: 'Manage Nostr relay connections' });
 
   const { config } = useAppContext();
   const { user } = useCurrentUser();
