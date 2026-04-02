@@ -6,18 +6,53 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostrPublish } from '@/hooks/useNostrPublish';
 import { useUploadFile } from '@/hooks/useUploadFile';
 import { useToast } from '@/hooks/useToast';
 import { useFeed } from '@/hooks/useFeed';
+import { useFollowList } from '@/hooks/useFollowList';
 import { cn } from '@/lib/utils';
-import { Loader2, RefreshCw, PauseCircle, PlayCircle, Send, Paperclip, Tag, Zap, Image } from 'lucide-react';
+import {
+  Loader2, RefreshCw, PauseCircle, PlayCircle, Send,
+  Paperclip, Tag, Zap, Image as ImageIcon, Globe, Users, Search,
+} from 'lucide-react';
 import type { NostrEvent } from '@nostrify/nostrify';
+
+// ─── Feed mode ───────────────────────────────────────────────────────────────
+
+type FeedMode = 'global' | 'following' | 'search';
+
+// ─── Skeleton rows ────────────────────────────────────────────────────────────
+
+function FeedSkeleton() {
+  return (
+    <>
+      {Array.from({ length: 5 }).map((_, i) => (
+        <Card key={i}>
+          <CardContent className="p-4 space-y-3">
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-10 w-10 rounded-full" />
+              <div className="space-y-1 flex-1">
+                <Skeleton className="h-4 w-32" />
+                <Skeleton className="h-3 w-20" />
+              </div>
+            </div>
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-4/5" />
+            <Skeleton className="h-4 w-3/5" />
+          </CardContent>
+        </Card>
+      ))}
+    </>
+  );
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
 
 export function FeedPage() {
   useSeoMeta({
@@ -30,25 +65,51 @@ export function FeedPage() {
   const { mutateAsync: uploadFile, isPending: isUploading } = useUploadFile();
   const { toast } = useToast();
 
+  // ── Compose state ──────────────────────────────────────────────────────────
   const [content, setContent] = useState('');
   const [tags, setTags] = useState('');
   const [paused, setPaused] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [composeOpen, setComposeOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const {
-    data,
-    fetchNextPage,
-    hasNextPage,
-    isFetchingNextPage,
-    isLoading,
-    refetch,
-    isFetching,
-  } = useFeed({ kinds: [1], limit: 20 });
+  // ── Feed mode ──────────────────────────────────────────────────────────────
+  const [feedMode, setFeedMode] = useState<FeedMode>('global');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeSearch, setActiveSearch] = useState('');
+
+  // ── Follow list (NIP-02) ───────────────────────────────────────────────────
+  const { data: followedPubkeys = [], isLoading: followLoading } = useFollowList();
+
+  // ── Feed queries ───────────────────────────────────────────────────────────
+  // Global feed – no author filter, pure relay-side kind:1
+  const globalFeed = useFeed({ kinds: [1], limit: 30 });
+
+  // Following feed – filter by NIP-02 contact list
+  const followingFeed = useFeed({
+    kinds: [1],
+    limit: 30,
+    authors: followedPubkeys.length > 0 ? followedPubkeys : undefined,
+  });
+
+  // Keyword / hashtag search feed
+  const searchFeed = useFeed({
+    kinds: [1],
+    limit: 30,
+    hashtag: activeSearch || undefined,
+  });
+
+  // Pick the active query object
+  const activeFeed =
+    feedMode === 'global'    ? globalFeed :
+    feedMode === 'following' ? followingFeed :
+                               searchFeed;
+
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading, refetch, isFetching } = activeFeed;
 
   const allEvents: NostrEvent[] = (data?.pages ?? []).flatMap(p => p.events);
 
-  // Infinite scroll
+  // ── Infinite scroll ────────────────────────────────────────────────────────
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadMoreRef = useCallback((node: HTMLDivElement | null) => {
     if (observerRef.current) observerRef.current.disconnect();
@@ -61,6 +122,7 @@ export function FeedPage() {
     observerRef.current.observe(node);
   }, [hasNextPage, isFetchingNextPage, paused, fetchNextPage]);
 
+  // ── Publish ────────────────────────────────────────────────────────────────
   const handlePublish = async () => {
     if (!user) {
       toast({ title: 'Login required', description: 'Please log in to publish.', variant: 'destructive' });
@@ -70,14 +132,12 @@ export function FeedPage() {
     let finalContent = content.trim();
     const eventTags: string[][] = [];
 
-    // Upload file if selected
     if (selectedFile) {
       try {
         const uploadedTags = await uploadFile(selectedFile);
         const urlTag = uploadedTags.find(t => t[0] === 'url');
         if (urlTag) {
-          finalContent = finalContent ? finalContent + '\n\n' + urlTag[1] : urlTag[1];
-          // Add imeta tag
+          finalContent = finalContent ? `${finalContent}\n\n${urlTag[1]}` : urlTag[1];
           eventTags.push(uploadedTags as string[]);
         }
       } catch (err) {
@@ -91,23 +151,17 @@ export function FeedPage() {
       return;
     }
 
-    // Add hashtag tags
-    const tagList = tags.split(',').map(t => t.trim()).filter(Boolean);
-    tagList.forEach(tag => eventTags.push(['t', tag]));
+    tags.split(',').map(t => t.trim()).filter(Boolean).forEach(tag => eventTags.push(['t', tag]));
 
     publishEvent(
-      {
-        kind: 1,
-        content: finalContent,
-        tags: eventTags,
-        created_at: Math.floor(Date.now() / 1000),
-      },
+      { kind: 1, content: finalContent, tags: eventTags, created_at: Math.floor(Date.now() / 1000) },
       {
         onSuccess: () => {
           toast({ title: 'Note published!' });
           setContent('');
           setTags('');
           setSelectedFile(null);
+          setComposeOpen(false);
           if (fileInputRef.current) fileInputRef.current.value = '';
           refetch();
         },
@@ -118,165 +172,265 @@ export function FeedPage() {
     );
   };
 
+  const handleSearchSubmit = () => {
+    const q = searchQuery.trim().replace(/^#/, '');
+    if (!q) return;
+    setActiveSearch(q);
+    setFeedMode('search');
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <AppLayout>
-      <div className="max-w-2xl mx-auto space-y-6">
-        {/* Compose card */}
-        <Card className="shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Zap className="h-5 w-5 text-primary" />
-              Global Feed
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Textarea
-              placeholder={user ? "What's on your mind?" : "Log in to publish notes..."}
-              value={content}
-              onChange={e => setContent(e.target.value)}
-              className="min-h-[100px] resize-none"
-              disabled={!user}
-            />
+      <div className="max-w-2xl mx-auto space-y-4">
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground flex items-center gap-1">
-                  <Paperclip className="h-3 w-3" />
-                  Attach media
-                </Label>
-                <div className="flex gap-2">
-                  <Input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*,video/*,audio/*"
-                    className="text-xs"
-                    disabled={!user}
-                    onChange={e => setSelectedFile(e.target.files?.[0] ?? null)}
-                  />
-                  {selectedFile && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="shrink-0"
-                      onClick={() => {
-                        setSelectedFile(null);
-                        if (fileInputRef.current) fileInputRef.current.value = '';
-                      }}
-                    >
-                      ×
-                    </Button>
-                  )}
-                </div>
-                {selectedFile && (
-                  <p className="text-xs text-muted-foreground truncate">{selectedFile.name}</p>
-                )}
-              </div>
+        {/* ── Header row: title + controls ─────────────────────────────── */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <h1 className="text-xl font-bold flex items-center gap-2">
+            <Zap className="h-5 w-5 text-primary" />
+            Feed
+          </h1>
 
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground flex items-center gap-1">
-                  <Tag className="h-3 w-3" />
-                  Hashtags (comma-separated)
-                </Label>
-                <Input
-                  placeholder="bitcoin, nostr, freedom"
-                  value={tags}
-                  onChange={e => setTags(e.target.value)}
-                  className="text-sm"
-                  disabled={!user}
-                />
-              </div>
-            </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => refetch()}
+              disabled={isFetching}
+              className="gap-1.5 h-8"
+            >
+              <RefreshCw className={cn('h-3.5 w-3.5', isFetching && 'animate-spin')} />
+              Refresh
+            </Button>
 
-            {selectedFile && (
-              <div className="flex items-center gap-2 p-2 bg-muted rounded-lg">
-                <Image className="h-4 w-4 text-muted-foreground" />
-                <span className="text-xs text-muted-foreground">{selectedFile.name} ({(selectedFile.size / 1024).toFixed(1)} KB)</span>
-              </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPaused(p => !p)}
+              className="gap-1.5 h-8"
+            >
+              {paused
+                ? <><PlayCircle className="h-3.5 w-3.5" />Resume</>
+                : <><PauseCircle className="h-3.5 w-3.5" />Pause</>}
+            </Button>
+
+            {user && (
+              <Button
+                size="sm"
+                className="gap-1.5 h-8"
+                onClick={() => setComposeOpen(o => !o)}
+              >
+                <Send className="h-3.5 w-3.5" />
+                {composeOpen ? 'Close' : 'New Note'}
+              </Button>
             )}
 
-            <div className="flex items-center gap-2 flex-wrap">
-              <Button
-                onClick={handlePublish}
-                disabled={!user || isPublishing || isUploading || (!content.trim() && !selectedFile)}
-                className="gap-2"
-              >
-                {(isPublishing || isUploading) ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Send className="h-4 w-4" />
-                )}
-                {isUploading ? 'Uploading…' : isPublishing ? 'Publishing…' : 'Publish'}
-              </Button>
+            {paused && <Badge variant="secondary" className="text-xs">Paused</Badge>}
+          </div>
+        </div>
 
-              <Button
-                variant="outline"
-                onClick={() => refetch()}
-                disabled={isFetching}
-                className="gap-2"
-              >
-                <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
-                Refresh
-              </Button>
+        {/* ── Compose panel (collapsible) ───────────────────────────────── */}
+        {composeOpen && user && (
+          <Card className="shadow-sm animate-fade-in border-primary/30">
+            <CardContent className="pt-4 space-y-3">
+              <Textarea
+                placeholder="What's on your mind?"
+                value={content}
+                onChange={e => setContent(e.target.value)}
+                className="min-h-[90px] resize-none"
+                onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handlePublish(); }}
+              />
 
-              <Button
-                variant="outline"
-                onClick={() => setPaused(p => !p)}
-                className="gap-2"
-              >
-                {paused ? (
-                  <><PlayCircle className="h-4 w-4" />Resume</>
-                ) : (
-                  <><PauseCircle className="h-4 w-4" />Pause</>
-                )}
-              </Button>
-
-              {paused && <Badge variant="secondary" className="text-xs">Feed paused</Badge>}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Feed */}
-        <div className="space-y-4">
-          {isLoading ? (
-            Array.from({ length: 5 }).map((_, i) => (
-              <Card key={i}>
-                <CardContent className="p-4 space-y-3">
-                  <div className="flex items-center gap-3">
-                    <Skeleton className="h-10 w-10 rounded-full" />
-                    <div className="space-y-1 flex-1">
-                      <Skeleton className="h-4 w-32" />
-                      <Skeleton className="h-3 w-20" />
-                    </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground flex items-center gap-1">
+                    <Paperclip className="h-3 w-3" />Attach media
+                  </Label>
+                  <div className="flex gap-2">
+                    <Input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*,video/*,audio/*"
+                      className="text-xs"
+                      onChange={e => setSelectedFile(e.target.files?.[0] ?? null)}
+                    />
+                    {selectedFile && (
+                      <Button variant="ghost" size="sm" className="shrink-0 h-9 px-2"
+                        onClick={() => { setSelectedFile(null); if (fileInputRef.current) fileInputRef.current.value = ''; }}>
+                        ×
+                      </Button>
+                    )}
                   </div>
-                  <Skeleton className="h-4 w-full" />
-                  <Skeleton className="h-4 w-4/5" />
-                  <Skeleton className="h-4 w-3/5" />
-                </CardContent>
-              </Card>
-            ))
-          ) : allEvents.length === 0 ? (
-            <Card className="border-dashed">
-              <CardContent className="py-16 text-center">
-                <p className="text-muted-foreground">No notes yet. Make sure you have relays connected.</p>
-              </CardContent>
-            </Card>
-          ) : (
-            allEvents.map(event => (
-              <NoteCard key={event.id} event={event} />
-            ))
-          )}
+                  {selectedFile && (
+                    <div className="flex items-center gap-1.5 p-1.5 bg-muted rounded text-xs text-muted-foreground">
+                      <ImageIcon className="h-3 w-3 shrink-0" />
+                      <span className="truncate">{selectedFile.name} · {(selectedFile.size / 1024).toFixed(1)} KB</span>
+                    </div>
+                  )}
+                </div>
 
-          {/* Infinite scroll sentinel */}
-          <div ref={loadMoreRef} className="h-4" />
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground flex items-center gap-1">
+                    <Tag className="h-3 w-3" />Hashtags (comma-separated)
+                  </Label>
+                  <Input
+                    placeholder="bitcoin, nostr, freedom"
+                    value={tags}
+                    onChange={e => setTags(e.target.value)}
+                    className="text-sm"
+                  />
+                </div>
+              </div>
 
-          {isFetchingNextPage && (
-            <div className="flex justify-center py-4">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              <div className="flex items-center justify-between pt-1">
+                <span className="text-xs text-muted-foreground">Ctrl+Enter to send</span>
+                <Button
+                  onClick={handlePublish}
+                  disabled={isPublishing || isUploading || (!content.trim() && !selectedFile)}
+                  size="sm"
+                  className="gap-2"
+                >
+                  {(isPublishing || isUploading)
+                    ? <Loader2 className="h-4 w-4 animate-spin" />
+                    : <Send className="h-4 w-4" />}
+                  {isUploading ? 'Uploading…' : isPublishing ? 'Publishing…' : 'Publish'}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ── Feed mode tabs ────────────────────────────────────────────── */}
+        <div className="space-y-3">
+          <Tabs value={feedMode} onValueChange={v => setFeedMode(v as FeedMode)}>
+            <TabsList className="w-full grid grid-cols-3 h-10">
+              <TabsTrigger value="global" className="gap-1.5 text-xs sm:text-sm">
+                <Globe className="h-3.5 w-3.5" />
+                Global
+              </TabsTrigger>
+              <TabsTrigger value="following" className="gap-1.5 text-xs sm:text-sm" disabled={!user}>
+                <Users className="h-3.5 w-3.5" />
+                Following
+                {feedMode === 'following' && followedPubkeys.length > 0 && (
+                  <Badge variant="secondary" className="ml-1 text-[10px] px-1 py-0 h-4">
+                    {followedPubkeys.length}
+                  </Badge>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="search" className="gap-1.5 text-xs sm:text-sm">
+                <Search className="h-3.5 w-3.5" />
+                Search
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+
+          {/* ── Search bar (only shown when search tab active) ─────────── */}
+          {feedMode === 'search' && (
+            <div className="flex gap-2 animate-fade-in">
+              <Input
+                placeholder="Search hashtag or keyword (e.g. bitcoin)"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleSearchSubmit()}
+                className="flex-1"
+              />
+              <Button onClick={handleSearchSubmit} size="sm" className="gap-1.5 shrink-0">
+                <Search className="h-3.5 w-3.5" />
+                Search
+              </Button>
             </div>
           )}
 
-          {!hasNextPage && allEvents.length > 0 && (
-            <p className="text-center text-sm text-muted-foreground py-4">You've reached the end</p>
+          {/* ── Following tab: extra info strip ───────────────────────── */}
+          {feedMode === 'following' && (
+            <div className="animate-fade-in">
+              {!user ? (
+                <Card className="border-dashed">
+                  <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                    Log in to see notes from people you follow
+                  </CardContent>
+                </Card>
+              ) : followLoading ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground px-1">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  Loading your follow list…
+                </div>
+              ) : followedPubkeys.length === 0 ? (
+                <Card className="border-dashed">
+                  <CardContent className="py-8 text-center space-y-1">
+                    <p className="text-sm font-medium">You're not following anyone yet</p>
+                    <p className="text-xs text-muted-foreground">
+                      Follow people on Nostr and their notes will appear here
+                    </p>
+                  </CardContent>
+                </Card>
+              ) : (
+                <p className="text-xs text-muted-foreground px-1">
+                  Showing notes from <span className="font-medium text-foreground">{followedPubkeys.length}</span> accounts you follow
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* ── Search tab: active query label ─────────────────────────── */}
+          {feedMode === 'search' && activeSearch && (
+            <div className="flex items-center gap-2 animate-fade-in">
+              <Badge variant="outline" className="gap-1">
+                <Search className="h-3 w-3" />#{activeSearch}
+              </Badge>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 text-xs text-muted-foreground"
+                onClick={() => { setActiveSearch(''); setSearchQuery(''); }}
+              >
+                Clear
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* ── Feed events ───────────────────────────────────────────────── */}
+        <div className="space-y-4">
+
+          {/* Don't render the feed if following tab has no pubkeys yet */}
+          {feedMode === 'following' && (!user || followedPubkeys.length === 0 && !followLoading) ? null : (
+            <>
+              {isLoading ? (
+                <FeedSkeleton />
+              ) : allEvents.length === 0 ? (
+                <Card className="border-dashed">
+                  <CardContent className="py-16 text-center">
+                    <p className="text-muted-foreground text-sm">
+                      {feedMode === 'search' && !activeSearch
+                        ? 'Enter a hashtag or keyword above and press Search'
+                        : feedMode === 'search'
+                        ? `No notes found for #${activeSearch}`
+                        : 'No notes yet — check your relay connections or refresh'}
+                    </p>
+                  </CardContent>
+                </Card>
+              ) : (
+                allEvents.map(event => (
+                  <NoteCard key={event.id} event={event} />
+                ))
+              )}
+
+              {/* Infinite scroll sentinel */}
+              <div ref={loadMoreRef} className="h-4" />
+
+              {isFetchingNextPage && (
+                <div className="flex justify-center py-4">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              )}
+
+              {!hasNextPage && allEvents.length > 0 && (
+                <p className="text-center text-sm text-muted-foreground py-4">
+                  You've reached the end
+                </p>
+              )}
+            </>
           )}
         </div>
       </div>

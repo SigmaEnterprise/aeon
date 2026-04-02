@@ -1,0 +1,21 @@
+{
+  "relays": [
+    "wss://relay.ditto.pub",
+    "wss://relay.nsite.lol",
+    "wss://relay.nosto.re",
+    "wss://relay.primal.net",
+    "wss://relay.damus.io",
+    "wss://purplerelay.com"
+  ],
+  "servers": [
+    "https://blossom.primal.net",
+    "https://cdn.sovbit.host"
+  ],
+  "id": "aeon",
+  "title": "Aeon",
+  "description": "A Simple Dream Of A Nostr Client",
+  "fallback": "/index.html",
+  "gatewayHostnames": [
+    "nosto.re"
+  ]
+}
