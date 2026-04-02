@@ -1,6 +1,6 @@
 import { createContext } from "react";
 
-export type Theme = "dark" | "light" | "system";
+export type Theme = "dark" | "light" | "system" | "solarized-light" | "solarized-dark" | "terminal" | "ocean" | "forest" | "desert" | "vintage" | "neon" | "monokai" | "dracula" | "gruvbox-light" | "gruvbox-dark" | "midnight";
 
 export interface RelayMetadata {
   /** List of relays with read/write permissions */

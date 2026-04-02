@@ -21,9 +21,11 @@ const RelayMetadataSchema = z.object({
   updatedAt: z.number(),
 }) satisfies z.ZodType<RelayMetadata>;
 
+const themeValues = ['dark', 'light', 'system', 'solarized-light', 'solarized-dark', 'terminal', 'ocean', 'forest', 'desert', 'vintage', 'neon', 'monokai', 'dracula', 'gruvbox-light', 'gruvbox-dark', 'midnight'] as const;
+
 // Zod schema for AppConfig validation
 const AppConfigSchema = z.object({
-  theme: z.enum(['dark', 'light', 'system']),
+  theme: z.enum(themeValues),
   relayMetadata: RelayMetadataSchema,
 }) satisfies z.ZodType<AppConfig>;
 
@@ -41,8 +43,12 @@ export function AppProvider(props: AppProviderProps) {
     {
       serialize: JSON.stringify,
       deserialize: (value: string) => {
-        const parsed = JSON.parse(value);
-        return AppConfigSchema.partial().parse(parsed);
+        try {
+          const parsed = JSON.parse(value);
+          return AppConfigSchema.partial().parse(parsed);
+        } catch {
+          return {};
+        }
       }
     }
   );
@@ -69,6 +75,8 @@ export function AppProvider(props: AppProviderProps) {
   );
 }
 
+const ALL_THEME_CLASSES = ['light', 'dark', 'solarized-light', 'solarized-dark', 'terminal', 'ocean', 'forest', 'desert', 'vintage', 'neon', 'monokai', 'dracula', 'gruvbox-light', 'gruvbox-dark', 'midnight'];
+
 /**
  * Hook to apply theme changes to the document root
  */
@@ -76,7 +84,8 @@ function useApplyTheme(theme: Theme) {
   useEffect(() => {
     const root = window.document.documentElement;
 
-    root.classList.remove('light', 'dark');
+    // Remove all theme classes
+    root.classList.remove(...ALL_THEME_CLASSES);
 
     if (theme === 'system') {
       const systemTheme = window.matchMedia('(prefers-color-scheme: dark)')
@@ -99,7 +108,7 @@ function useApplyTheme(theme: Theme) {
 
     const handleChange = () => {
       const root = window.document.documentElement;
-      root.classList.remove('light', 'dark');
+      root.classList.remove(...ALL_THEME_CLASSES);
 
       const systemTheme = mediaQuery.matches ? 'dark' : 'light';
       root.classList.add(systemTheme);
