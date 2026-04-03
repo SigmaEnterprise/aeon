@@ -23,7 +23,7 @@ interface FeedPage {
 
 export function useFeed(options: FeedOptions = {}) {
   const { nostr } = useNostr();
-  const { authors, limit = 30, kinds = [1], hashtag, keyword } = options;
+  const { authors, limit = 30, kinds = [1, 30023], hashtag, keyword } = options;
 
   // If authors is explicitly [] (empty array) we skip the query entirely.
   const enabled = !authors || authors.length > 0;
@@ -53,7 +53,7 @@ export function useFeed(options: FeedOptions = {}) {
 
       const events = await nostr.query(
         [filter as Parameters<typeof nostr.query>[0][0]],
-        { signal: AbortSignal.timeout(10000) }
+        { signal: AbortSignal.timeout(15000) }
       );
 
       // Deduplicate and sort newest-first

@@ -48,7 +48,7 @@ export function CustomFeedPage() {
     isFetching,
   } = useFeed({
     authors: activePubkeys.length > 0 ? activePubkeys : undefined,
-    kinds: [1],
+    kinds: [1, 30023],
     limit: 30,
   });
 

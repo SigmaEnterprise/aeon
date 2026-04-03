@@ -93,7 +93,19 @@ const NostrProvider: React.FC<NostrProviderProps> = (props) => {
           .filter(r => r.read)
           .map(r => r.url);
 
-        for (const url of readRelays) {
+        // Always include a set of reliable public relays for global feeds
+        // This ensures events from other users are visible even if personal
+        // relay list is empty or misconfigured.
+        const publicRelays = [
+          'wss://relay.damus.io',
+          'wss://relay.primal.net',
+          'wss://nos.lol',
+          'wss://relay.nostr.band',
+        ];
+
+        const allReadRelays = new Set<string>([...readRelays, ...publicRelays]);
+
+        for (const url of allReadRelays) {
           routes.set(url, filters);
         }
 
@@ -105,11 +117,18 @@ const NostrProvider: React.FC<NostrProviderProps> = (props) => {
           .filter(r => r.write)
           .map(r => r.url);
 
-        const allRelays = new Set<string>(writeRelays);
+        // Always publish to default write relays as fallback
+        const defaultWriteRelays = [
+          'wss://relay.ditto.pub',
+          'wss://relay.primal.net',
+          'wss://relay.damus.io',
+        ];
+
+        const allRelays = new Set<string>([...writeRelays, ...defaultWriteRelays]);
 
         return [...allRelays];
       },
-      eoseTimeout: 4000,
+      eoseTimeout: 8000,
     });
   }
 

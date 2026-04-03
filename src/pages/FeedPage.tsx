@@ -82,19 +82,19 @@ export function FeedPage() {
   const { data: followedPubkeys = [], isLoading: followLoading } = useFollowList();
 
   // ── Feed queries ───────────────────────────────────────────────────────────
-  // Global feed – no author filter, pure relay-side kind:1
-  const globalFeed = useFeed({ kinds: [1], limit: 30 });
+  // Global feed – no author filter, kind:1 notes + kind:30023 long-form articles
+  const globalFeed = useFeed({ kinds: [1, 30023], limit: 30 });
 
   // Following feed – filter by NIP-02 contact list
   const followingFeed = useFeed({
-    kinds: [1],
+    kinds: [1, 30023],
     limit: 30,
     authors: followedPubkeys.length > 0 ? followedPubkeys : undefined,
   });
 
   // Keyword / hashtag search feed
   const searchFeed = useFeed({
-    kinds: [1],
+    kinds: [1, 30023],
     limit: 30,
     hashtag: activeSearch || undefined,
   });
@@ -138,7 +138,9 @@ export function FeedPage() {
         const urlTag = uploadedTags.find(t => t[0] === 'url');
         if (urlTag) {
           finalContent = finalContent ? `${finalContent}\n\n${urlTag[1]}` : urlTag[1];
-          eventTags.push(uploadedTags as string[]);
+          // Add imeta tag for proper NIP-94 metadata
+          const imetaValues = uploadedTags.map(t => t.join(' '));
+          eventTags.push(['imeta', ...imetaValues]);
         }
       } catch (err) {
         toast({ title: 'Upload failed', description: (err as Error).message, variant: 'destructive' });

@@ -45,10 +45,6 @@ interface MediaHostProbe {
   probeUrl?: string;
 }
 
-async function sha256Hex(buf: ArrayBuffer): Promise<string> {
-  const hash = await crypto.subtle.digest('SHA-256', buf);
-  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
 
 export function MediaHostsPage() {
   useSeoMeta({ title: 'Media Hosts — Aeon', description: 'Manage media upload hosts' });
@@ -156,53 +152,65 @@ export function MediaHostsPage() {
     }
   };
 
-  const buildNip98Auth = async (url: string, method: string, body: ArrayBuffer | null): Promise<string> => {
+  /** BUD-11: build a kind:24242 Blossom authorization token */
+  const buildBlossomAuth = async (fileHash: string, fileSize: number, contentType: string): Promise<string> => {
     if (!user) throw new Error('Not logged in');
-    const tags: string[][] = [['u', url], ['method', method]];
-    if (body) tags.push(['payload', await sha256Hex(body)]);
+    const now = Math.floor(Date.now() / 1000);
     const event = await user.signer.signEvent({
-      kind: 27235, created_at: Math.floor(Date.now() / 1000), content: '', tags,
+      kind: 24242,
+      content: 'Upload file',
+      tags: [
+        ['t', 'upload'],
+        ['x', fileHash],
+        ['expiration', String(now + 300)],
+        ['size', String(fileSize)],
+        ['type', contentType || 'application/octet-stream'],
+      ],
+      created_at: now,
     });
     return btoa(unescape(encodeURIComponent(JSON.stringify(event))));
   };
 
   const handleTestUpload = async () => {
     if (!selectedFile || !uploadHost || !user) return;
-    const probe = probes[uploadHost];
-    if (!probe || probe.status !== 'ok') {
-      toast({ title: 'Host not ready — probe it first', variant: 'destructive' });
-      return;
-    }
     setIsUploading(true);
     setUploadProgress(0);
     setUploadResult(null);
     try {
-      const data = probe.data;
-      const apiUrl = data?.api_url || data?.apiUrl || data?.upload_url
-        || uploadHost.replace(/\/+$/, '') + '/upload';
       const fileBuffer = await selectedFile.arrayBuffer();
-      setUploadProgress(30);
-      const authB64 = await buildNip98Auth(apiUrl, 'POST', fileBuffer);
-      setUploadProgress(50);
-      const form = new FormData();
-      form.append('file', selectedFile);
-      form.append('size', String(selectedFile.size));
-      form.append('content_type', selectedFile.type || '');
-      const resp = await fetch(apiUrl, {
-        method: 'POST',
-        headers: { Authorization: 'Nostr ' + authB64, Accept: 'application/json' },
-        body: form,
-        signal: AbortSignal.timeout(60000),
+      setUploadProgress(20);
+
+      // SHA-256 hash of the file (required by BUD-11)
+      const hashBuffer = await crypto.subtle.digest('SHA-256', fileBuffer);
+      const fileHash = Array.from(new Uint8Array(hashBuffer))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+      setUploadProgress(40);
+
+      // Build BUD-11 (kind:24242) auth token
+      const authB64 = await buildBlossomAuth(fileHash, selectedFile.size, selectedFile.type || 'application/octet-stream');
+      setUploadProgress(60);
+
+      // BUD-02: PUT /upload with binary body
+      const uploadUrl = uploadHost.replace(/\/+$/, '') + '/upload';
+      const resp = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: {
+          'Authorization': 'Nostr ' + authB64,
+          'Content-Type': selectedFile.type || 'application/octet-stream',
+          'Content-Length': String(selectedFile.size),
+          'X-SHA-256': fileHash,
+        },
+        body: fileBuffer,
+        signal: AbortSignal.timeout(120000),
       });
-      setUploadProgress(80);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      setUploadProgress(85);
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => `HTTP ${resp.status}`);
+        throw new Error(errText);
+      }
       const json = await resp.json().catch(() => null);
-      let uploadedUrl: string | null =
-        json?.nip94_event?.tags?.find((t: string[]) => t[0] === 'url')?.[1]
-        || json?.url || json?.download_url || null;
-      if (!uploadedUrl) { const loc = resp.headers.get('location'); if (loc) uploadedUrl = loc; }
-      if (!uploadedUrl) { const m = JSON.stringify(json || {}).match(/https?:\/\/[^\s"']+/); if (m) uploadedUrl = m[0]; }
-      if (!uploadedUrl) throw new Error('No URL in response');
+      const uploadedUrl: string | undefined = json?.url;
+      if (!uploadedUrl) throw new Error('No URL in Blossom response');
       setUploadProgress(100);
       setUploadResult({ url: uploadedUrl, host: uploadHost });
       toast({ title: 'Upload successful!' });
