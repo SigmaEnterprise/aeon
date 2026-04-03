@@ -1,3 +1,16 @@
+/**
+ * Private DMs — NIP-17 (NIP-44 + NIP-59 Gift Wrap)
+ *
+ * Extension signer path:
+ *  - SEND: Uses signer.nip44.encrypt for the seal content, then wraps with
+ *    an ephemeral key (raw nostr-tools, no private key needed for this step).
+ *  - DECRYPT: Uses signer.nip44.decrypt for both the gift-wrap→seal and
+ *    seal→rumor layers, so extension signers (Alby, nos2x, etc.) that expose
+ *    nip44 can decrypt without ever exposing the private key.
+ *
+ * Fallback: If the extension does NOT support nip44, the user can paste their
+ * nsec/hex key in the manual key field for decryption only.
+ */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useSeoMeta } from '@unhead/react';
 import { useNostr } from '@nostrify/react';
@@ -9,27 +22,25 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
-import { useNostrPublish } from '@/hooks/useNostrPublish';
 import { useAuthor } from '@/hooks/useAuthor';
 import { useToast } from '@/hooks/useToast';
 import { useAppContext } from '@/hooks/useAppContext';
 import { genUserName } from '@/lib/genUserName';
 import {
-  Shield, Send, Lock, Loader2, Info, ArrowLeft,
-  MessageSquare, User, CheckCircle2, Key, RefreshCw, ShieldCheck
+  ShieldCheck, Send, Lock, Loader2, Info, ArrowLeft,
+  MessageSquare, User, CheckCircle2, Key, RefreshCw, AlertCircle,
 } from 'lucide-react';
 import type { NostrEvent } from '@nostrify/nostrify';
 
-// ─── helpers ────────────────────────────────────────────────────────────────
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+// ─── Hex helpers ─────────────────────────────────────────────────────────────
+function bytesToHex(b: Uint8Array): string {
+  return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join('');
 }
 function hexToBytes(hex: string): Uint8Array {
   const b = new Uint8Array(hex.length / 2);
@@ -40,60 +51,38 @@ function decodePubkey(input: string): string | null {
   const t = input.trim();
   if (/^[0-9a-fA-F]{64}$/.test(t)) return t.toLowerCase();
   try {
-    const dec = nip19.decode(t);
-    if (dec.type === 'npub') return dec.data as string;
-    if (dec.type === 'nprofile') return (dec.data as { pubkey: string }).pubkey;
+    const d = nip19.decode(t);
+    if (d.type === 'npub') return d.data as string;
+    if (d.type === 'nprofile') return (d.data as { pubkey: string }).pubkey;
   } catch { /* ignore */ }
   return null;
 }
 const randomNow = () => Math.round(Date.now() / 1000 - Math.random() * 2 * 24 * 60 * 60);
 
-// ─── NIP-44 encryption via the signer or raw key ────────────────────────────
-
-async function nip44EncryptWith(
-  signer: { nip44?: { encrypt: (pk: string, plain: string) => Promise<string> } },
-  recipientPubkey: string,
-  plaintext: string
-): Promise<string> {
-  if (signer.nip44) return signer.nip44.encrypt(recipientPubkey, plaintext);
-  throw new Error('Signer does not support NIP-44');
-}
-
-async function nip44DecryptWith(
-  signer: { nip44?: { decrypt: (pk: string, ciphertext: string) => Promise<string> } },
-  senderPubkey: string,
-  ciphertext: string
-): Promise<string> {
-  if (signer.nip44) return signer.nip44.decrypt(senderPubkey, ciphertext);
-  throw new Error('Signer does not support NIP-44');
-}
-
-// ─── Build NIP-59 gift-wrap ──────────────────────────────────────────────────
-
-async function buildGiftWrap(
+// ─── NIP-59 gift-wrap (extension signer path) ─────────────────────────────
+/**
+ * Build a gift wrap using the extension signer for the seal (NIP-44 via
+ * signer.nip44.encrypt), and an ephemeral raw key for the outer wrap.
+ * No private key exposure needed.
+ */
+async function buildGiftWrapViaSigner(
   rumor: Omit<NostrEvent, 'sig'>,
-  senderPrivKeyBytes: Uint8Array,
-  recipientPubkey: string
+  signer: { nip44: { encrypt: (pk: string, plain: string) => Promise<string> }; signEvent: (ev: object) => Promise<NostrEvent> },
+  recipientPubkey: string,
 ): Promise<NostrEvent> {
-  // 1. seal  (kind 13): encrypt rumor to recipient, signed by sender
-  const sealContent = nip44.v2.encrypt(
-    JSON.stringify(rumor),
-    nip44.v2.utils.getConversationKey(bytesToHex(senderPrivKeyBytes), recipientPubkey)
-  );
-  const sealTemplate = {
+  // 1. Seal (kind:13): encrypt rumor for recipient via signer.nip44
+  const sealContent = await signer.nip44.encrypt(recipientPubkey, JSON.stringify(rumor));
+  const seal = await signer.signEvent({
     kind: 13,
     content: sealContent,
     created_at: randomNow(),
-    tags: [] as string[][],
-  };
-  const seal = finalizeEvent(sealTemplate, senderPrivKeyBytes);
+    tags: [],
+  });
 
-  // 2. gift wrap (kind 1059): encrypt seal to recipient, signed by ephemeral key
+  // 2. Gift wrap (kind:1059): encrypt seal with ephemeral raw key
   const ephemeralKey = generateSecretKey();
-  const wrapContent = nip44.v2.encrypt(
-    JSON.stringify(seal),
-    nip44.v2.utils.getConversationKey(bytesToHex(ephemeralKey), recipientPubkey)
-  );
+  const ck = nip44.v2.utils.getConversationKey(bytesToHex(ephemeralKey), recipientPubkey);
+  const wrapContent = nip44.v2.encrypt(JSON.stringify(seal), ck);
   const wrapTemplate = {
     kind: 1059,
     content: wrapContent,
@@ -103,21 +92,36 @@ async function buildGiftWrap(
   return finalizeEvent(wrapTemplate, ephemeralKey) as NostrEvent;
 }
 
-/** Unwrap a kind:1059 gift wrap. Returns the inner rumor or null. */
-async function unwrapGiftWrap(
+/** Build gift wrap with raw private key bytes (nsec fallback path) */
+async function buildGiftWrapViaKey(
+  rumor: Omit<NostrEvent, 'sig'>,
+  senderPrivKeyBytes: Uint8Array,
+  recipientPubkey: string,
+): Promise<NostrEvent> {
+  const ck1 = nip44.v2.utils.getConversationKey(bytesToHex(senderPrivKeyBytes), recipientPubkey);
+  const sealContent = nip44.v2.encrypt(JSON.stringify(rumor), ck1);
+  const seal = finalizeEvent({ kind: 13, content: sealContent, created_at: randomNow(), tags: [] }, senderPrivKeyBytes);
+
+  const ephemeralKey = generateSecretKey();
+  const ck2 = nip44.v2.utils.getConversationKey(bytesToHex(ephemeralKey), recipientPubkey);
+  const wrapContent = nip44.v2.encrypt(JSON.stringify(seal), ck2);
+  return finalizeEvent({
+    kind: 1059, content: wrapContent, created_at: randomNow(), tags: [['p', recipientPubkey]],
+  }, ephemeralKey) as NostrEvent;
+}
+
+// ─── Unwrap via extension signer (nip44.decrypt) ─────────────────────────
+async function unwrapViaExtension(
   wrap: NostrEvent,
-  recipientPrivKeyBytes: Uint8Array
+  signer: { nip44: { decrypt: (pk: string, cipher: string) => Promise<string> } },
 ): Promise<(Omit<NostrEvent, 'sig'> & { sig?: string }) | null> {
   try {
-    const recipientPubkey = getPublicKey(recipientPrivKeyBytes);
-    const ck1 = nip44.v2.utils.getConversationKey(bytesToHex(recipientPrivKeyBytes), wrap.pubkey);
-    const sealJson = nip44.v2.decrypt(wrap.content, ck1);
+    // Layer 1: decrypt gift wrap content (signer key + wrap.pubkey as convo partner)
+    const sealJson = await signer.nip44.decrypt(wrap.pubkey, wrap.content);
     const seal: NostrEvent = JSON.parse(sealJson);
-
-    const ck2 = nip44.v2.utils.getConversationKey(bytesToHex(recipientPrivKeyBytes), seal.pubkey);
-    const rumorJson = nip44.v2.decrypt(seal.content, ck2);
+    // Layer 2: decrypt seal content (signer key + seal.pubkey as convo partner)
+    const rumorJson = await signer.nip44.decrypt(seal.pubkey, seal.content);
     const rumor = JSON.parse(rumorJson);
-    // verify the seal pubkey matches the rumor pubkey (prevents impersonation)
     if (rumor.pubkey !== seal.pubkey) return null;
     return rumor;
   } catch {
@@ -125,46 +129,43 @@ async function unwrapGiftWrap(
   }
 }
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+/** Unwrap via raw private key bytes */
+async function unwrapViaKey(
+  wrap: NostrEvent,
+  privBytes: Uint8Array,
+): Promise<(Omit<NostrEvent, 'sig'> & { sig?: string }) | null> {
+  try {
+    const ck1 = nip44.v2.utils.getConversationKey(bytesToHex(privBytes), wrap.pubkey);
+    const sealJson = nip44.v2.decrypt(wrap.content, ck1);
+    const seal: NostrEvent = JSON.parse(sealJson);
+    const ck2 = nip44.v2.utils.getConversationKey(bytesToHex(privBytes), seal.pubkey);
+    const rumorJson = nip44.v2.decrypt(seal.content, ck2);
+    const rumor = JSON.parse(rumorJson);
+    if (rumor.pubkey !== seal.pubkey) return null;
+    return rumor;
+  } catch {
+    return null;
+  }
+}
 
+// ─── Types ────────────────────────────────────────────────────────────────
 interface DecryptedMsg {
-  id: string;
-  content: string;
-  kind: number;
-  created_at: number;
-  senderPubkey: string;
-  direction: 'sent' | 'received';
-  subject?: string;
+  id: string; content: string; kind: number; created_at: number;
+  senderPubkey: string; direction: 'sent' | 'received'; subject?: string;
 }
+interface ConversationContact { pubkey: string; lastSeen: number; }
 
-interface ConversationContact {
-  pubkey: string;
-  lastSeen: number;
-}
-
-// ─── Sub-components ──────────────────────────────────────────────────────────
-
-function ContactRow({
-  pubkey,
-  isActive,
-  onClick,
-}: {
-  pubkey: string;
-  isActive: boolean;
-  onClick: () => void;
-}) {
+// ─── Sub-components ───────────────────────────────────────────────────────
+function ContactRow({ pubkey, isActive, onClick }: { pubkey: string; isActive: boolean; onClick: () => void }) {
   const author = useAuthor(pubkey);
   const meta = author.data?.metadata;
   const name = meta?.name ?? genUserName(pubkey);
   return (
-    <button
-      onClick={onClick}
+    <button onClick={onClick}
       className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors text-left
-        ${isActive ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}`}
-    >
+        ${isActive ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'}`}>
       <Avatar className="h-8 w-8 shrink-0">
-        <AvatarImage src={meta?.picture} />
-        <AvatarFallback className="text-xs">{name.slice(0, 2).toUpperCase()}</AvatarFallback>
+        <AvatarImage src={meta?.picture} /><AvatarFallback className="text-xs">{name.slice(0, 2).toUpperCase()}</AvatarFallback>
       </Avatar>
       <span className="truncate font-medium">{name}</span>
     </button>
@@ -176,14 +177,8 @@ function MessageBubble({ msg }: { msg: DecryptedMsg }) {
   return (
     <div className={`flex ${isSent ? 'justify-end' : 'justify-start'}`}>
       <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm
-        ${isSent
-          ? 'bg-primary text-primary-foreground rounded-tr-sm'
-          : 'bg-muted rounded-tl-sm'
-        }`}
-      >
-        {msg.subject && (
-          <p className="text-xs font-semibold opacity-70 mb-1">📌 {msg.subject}</p>
-        )}
+        ${isSent ? 'bg-primary text-primary-foreground rounded-tr-sm' : 'bg-muted rounded-tl-sm'}`}>
+        {msg.subject && <p className="text-xs font-semibold opacity-70 mb-1">📌 {msg.subject}</p>}
         <p className="whitespace-pre-wrap break-words">{msg.content}</p>
         <p className={`text-[10px] mt-1 ${isSent ? 'text-primary-foreground/60' : 'text-muted-foreground'}`}>
           {new Date(msg.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -193,22 +188,39 @@ function MessageBubble({ msg }: { msg: DecryptedMsg }) {
   );
 }
 
-// ─── Main page ───────────────────────────────────────────────────────────────
+function RecipientHeader({ pubkey, onBack }: { pubkey: string; onBack: () => void }) {
+  const author = useAuthor(pubkey);
+  const meta = author.data?.metadata;
+  const name = meta?.name ?? genUserName(pubkey);
+  const npub = nip19.npubEncode(pubkey);
+  return (
+    <div className="p-3 flex items-center gap-3 shrink-0">
+      <Button variant="ghost" size="sm" className="h-7 w-7 p-0 md:hidden" onClick={onBack}>
+        <ArrowLeft className="h-4 w-4" />
+      </Button>
+      <Avatar className="h-8 w-8">
+        <AvatarImage src={meta?.picture} /><AvatarFallback className="text-xs">{name.slice(0, 2).toUpperCase()}</AvatarFallback>
+      </Avatar>
+      <div className="flex-1 min-w-0">
+        <p className="font-semibold text-sm truncate">{name}</p>
+        <p className="text-[10px] font-mono text-muted-foreground truncate">{npub.slice(0, 24)}…</p>
+      </div>
+      <Badge variant="secondary" className="text-[10px] gap-1 shrink-0">
+        <ShieldCheck className="h-2.5 w-2.5" />NIP-17
+      </Badge>
+    </div>
+  );
+}
 
+// ─── Main page ────────────────────────────────────────────────────────────
 export function ShieldedPage() {
-  useSeoMeta({
-    title: 'Private DMs — Aeon',
-    description: 'NIP-17 encrypted direct messages with NIP-44 + NIP-59 gift wraps',
-  });
+  useSeoMeta({ title: 'Private DMs — Aeon', description: 'NIP-17 encrypted DMs' });
 
   const { user } = useCurrentUser();
   const { nostr } = useNostr();
   const { config } = useAppContext();
   const { toast } = useToast();
   const queryClient = useQueryClient();
-
-  // NWC / wallet managed by the project's existing hooks – we don't need it here directly
-  // but the WalletModal in the sidebar handles it.
 
   const [recipientInput, setRecipientInput] = useState('');
   const [activeRecipient, setActiveRecipient] = useState<string | null>(null);
@@ -218,163 +230,143 @@ export function ShieldedPage() {
   const [subjectInput, setSubjectInput] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [isDecrypting, setIsDecrypting] = useState(false);
-  const [privKeyForDecrypt, setPrivKeyForDecrypt] = useState('');
-  const [showPrivKeyInput, setShowPrivKeyInput] = useState(false);
+  const [manualKey, setManualKey] = useState('');
+  const [showKeyInput, setShowKeyInput] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
-  // Scroll to bottom on new messages
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-  // Fetch incoming gift wraps (kind 1059) addressed to us
+  // Detect extension nip44 support
+  const extensionSupportsNip44 = !!(user?.signer?.nip44);
+  const loginType = (user as { loginType?: string })?.loginType;
+  const isExtension = !manualKey && extensionSupportsNip44;
+
   const { data: wraps, isLoading: loadingWraps, refetch } = useQuery<NostrEvent[]>({
     queryKey: ['nip17-wraps', user?.pubkey],
     queryFn: async () => {
       if (!user) return [];
-      return nostr.query(
-        [{ kinds: [1059], '#p': [user.pubkey], limit: 200 }],
-        { signal: AbortSignal.timeout(10000) }
-      );
+      return nostr.query([{ kinds: [1059], '#p': [user.pubkey], limit: 200 }], { signal: AbortSignal.timeout(10000) });
     },
     enabled: !!user,
     staleTime: 30000,
   });
 
-  // Helper: get privkey bytes – either from signer or from manual input
-  const getPrivKeyBytes = useCallback(async (): Promise<Uint8Array | null> => {
-    // Prefer extension / nsec signer's raw key if it exposes one
-    // Nostrify NUser has a getPrivateKey helper for nsec logins
-    // We'll try to get it from the login store
-    if (privKeyForDecrypt.trim()) {
-      const hex = privKeyForDecrypt.trim().startsWith('nsec')
-        ? (() => {
-            try {
-              const d = nip19.decode(privKeyForDecrypt.trim());
-              return d.type === 'nsec' ? bytesToHex(d.data as Uint8Array) : null;
-            } catch { return null; }
-          })()
-        : (/^[0-9a-fA-F]{64}$/.test(privKeyForDecrypt.trim()) ? privKeyForDecrypt.trim() : null);
-      if (hex) return hexToBytes(hex);
+  // Resolve private key bytes (manual fallback only)
+  const getPrivKeyBytes = useCallback((): Uint8Array | null => {
+    if (!manualKey.trim()) return null;
+    const k = manualKey.trim();
+    if (k.startsWith('nsec')) {
+      try {
+        const d = nip19.decode(k);
+        if (d.type === 'nsec') return d.data as Uint8Array;
+      } catch { return null; }
     }
+    if (/^[0-9a-fA-F]{64}$/.test(k)) return hexToBytes(k);
     return null;
-  }, [privKeyForDecrypt]);
+  }, [manualKey]);
 
-  // Decrypt all wrapped messages
   const handleDecryptAll = async () => {
-    if (!wraps || wraps.length === 0 || !user) return;
-    const privBytes = await getPrivKeyBytes();
-    if (!privBytes) {
-      setShowPrivKeyInput(true);
-      toast({ title: 'Enter your private key to decrypt', description: 'NIP-17 requires your private key for decryption.' });
+    if (!wraps?.length || !user) return;
+
+    // Prefer extension nip44 path
+    const signerNip44 = user.signer?.nip44;
+    const privBytes = !signerNip44 ? getPrivKeyBytes() : null;
+
+    if (!signerNip44 && !privBytes) {
+      setShowKeyInput(true);
+      toast({ title: 'Private key needed', description: 'Your signer does not expose NIP-44. Enter your nsec below.' });
       return;
     }
+
     setIsDecrypting(true);
     const decrypted: DecryptedMsg[] = [];
     const newContacts = new Map<string, number>();
 
     for (const wrap of wraps) {
-      const rumor = await unwrapGiftWrap(wrap, privBytes);
-      if (!rumor) continue;
-      if (rumor.kind !== 14 && rumor.kind !== 15) continue;
+      let rumor: (Omit<NostrEvent, 'sig'> & { sig?: string }) | null = null;
+      if (signerNip44) {
+        rumor = await unwrapViaExtension(wrap, user.signer as Parameters<typeof unwrapViaExtension>[1]);
+      } else if (privBytes) {
+        rumor = await unwrapViaKey(wrap, privBytes);
+      }
+      if (!rumor || (rumor.kind !== 14 && rumor.kind !== 15)) continue;
       const subject = rumor.tags?.find(t => t[0] === 'subject')?.[1];
       decrypted.push({
-        id: rumor.id ?? wrap.id,
-        content: rumor.content,
-        kind: rumor.kind,
-        created_at: rumor.created_at,
-        senderPubkey: rumor.pubkey,
-        direction: rumor.pubkey === user.pubkey ? 'sent' : 'received',
-        subject,
+        id: rumor.id ?? wrap.id, content: rumor.content, kind: rumor.kind,
+        created_at: rumor.created_at, senderPubkey: rumor.pubkey,
+        direction: rumor.pubkey === user.pubkey ? 'sent' : 'received', subject,
       });
       newContacts.set(rumor.pubkey, Math.max(newContacts.get(rumor.pubkey) ?? 0, rumor.created_at));
     }
 
     setMessages(decrypted.sort((a, b) => a.created_at - b.created_at));
-    const contactArr: ConversationContact[] = Array.from(newContacts.entries()).map(([pubkey, lastSeen]) => ({ pubkey, lastSeen }));
+    const contactArr = Array.from(newContacts.entries()).map(([pubkey, lastSeen]) => ({ pubkey, lastSeen }));
     setContacts(contactArr.sort((a, b) => b.lastSeen - a.lastSeen));
     setIsDecrypting(false);
     toast({ title: `Decrypted ${decrypted.length} messages` });
   };
 
-  // Filter messages for active conversation
-  const conversationMessages = activeRecipient
-    ? messages.filter(m =>
-        m.senderPubkey === activeRecipient ||
-        (m.direction === 'sent' && messages.some(x => x.senderPubkey === activeRecipient && x.direction === 'received'))
-      )
-    : messages;
-
-  // Truly filter: show only messages between me and activeRecipient
   const threadMessages = activeRecipient
-    ? messages.filter(m =>
-        m.senderPubkey === activeRecipient ||
-        m.direction === 'sent'
-      )
+    ? messages.filter(m => m.senderPubkey === activeRecipient || m.direction === 'sent')
     : [];
 
-  // Send a NIP-17 message
   const handleSend = async () => {
     if (!user || !activeRecipient || !messageInput.trim()) return;
     setIsSending(true);
 
     try {
-      const privBytes = await getPrivKeyBytes();
-      if (!privBytes) {
-        toast({ title: 'Private key required to send NIP-17 messages', variant: 'destructive' });
-        setShowPrivKeyInput(true);
+      const signerNip44 = user.signer?.nip44;
+      const privBytes = !signerNip44 ? getPrivKeyBytes() : null;
+
+      if (!signerNip44 && !privBytes) {
+        toast({ title: 'Cannot send', description: 'No NIP-44 capable signer and no private key. Enter your nsec below.', variant: 'destructive' });
+        setShowKeyInput(true);
         setIsSending(false);
         return;
       }
 
-      const senderPubkey = getPublicKey(privBytes);
-      const recipientRelays = await nostr.query(
-        [{ kinds: [10050], authors: [activeRecipient], limit: 1 }],
-        { signal: AbortSignal.timeout(5000) }
-      ).then(evts => evts[0]?.tags.filter(t => t[0] === 'relay').map(t => t[1]) ?? []);
-
-      const tags: string[][] = [['p', activeRecipient, recipientRelays[0] ?? '']];
+      // Build rumor
+      const senderPubkey = user.pubkey;
+      const tags: string[][] = [['p', activeRecipient, '']];
       if (subjectInput.trim()) tags.push(['subject', subjectInput.trim()]);
 
-      // Build unsigned rumor (kind 14)
       const rumor: Omit<NostrEvent, 'sig'> = {
-        id: '',
-        pubkey: senderPubkey,
+        id: '', pubkey: senderPubkey,
         created_at: Math.floor(Date.now() / 1000),
-        kind: 14,
-        tags,
-        content: messageInput.trim(),
+        kind: 14, tags, content: messageInput.trim(),
       };
-      rumor.id = getEventHash(rumor as NostrEvent);
+      (rumor as NostrEvent).id = getEventHash(rumor as NostrEvent);
 
-      // Wrap for recipient
-      const wrapForRecipient = await buildGiftWrap(rumor, privBytes, activeRecipient);
-      // Wrap for self (so we can read sent messages)
-      const wrapForSelf = await buildGiftWrap(rumor, privBytes, senderPubkey);
+      // Build gift wraps
+      let wrapForRecipient: NostrEvent, wrapForSelf: NostrEvent;
+      if (signerNip44) {
+        const signerWithNip44 = user.signer as Parameters<typeof buildGiftWrapViaSigner>[1];
+        [wrapForRecipient, wrapForSelf] = await Promise.all([
+          buildGiftWrapViaSigner(rumor, signerWithNip44, activeRecipient),
+          buildGiftWrapViaSigner(rumor, signerWithNip44, senderPubkey),
+        ]);
+      } else {
+        [wrapForRecipient, wrapForSelf] = await Promise.all([
+          buildGiftWrapViaKey(rumor, privBytes!, activeRecipient),
+          buildGiftWrapViaKey(rumor, privBytes!, senderPubkey),
+        ]);
+      }
 
-      const relays = config.relayMetadata.relays.map(r => r.url);
-
-      // Publish wraps
       await Promise.all([
         nostr.event(wrapForRecipient, { signal: AbortSignal.timeout(8000) }),
         nostr.event(wrapForSelf, { signal: AbortSignal.timeout(8000) }),
       ]);
 
-      // Optimistically add to local messages
       setMessages(prev => [...prev, {
-        id: rumor.id,
-        content: rumor.content,
-        kind: rumor.kind,
-        created_at: rumor.created_at,
-        senderPubkey: senderPubkey,
-        direction: 'sent',
+        id: (rumor as NostrEvent).id, content: rumor.content, kind: rumor.kind,
+        created_at: rumor.created_at, senderPubkey, direction: 'sent',
         subject: subjectInput.trim() || undefined,
       }].sort((a, b) => a.created_at - b.created_at));
 
       setMessageInput('');
       setSubjectInput('');
       queryClient.invalidateQueries({ queryKey: ['nip17-wraps'] });
-      toast({ title: 'Message sent privately!' });
+      toast({ title: 'Sent privately!' });
     } catch (err) {
       toast({ title: 'Send failed', description: (err as Error).message, variant: 'destructive' });
     }
@@ -383,17 +375,11 @@ export function ShieldedPage() {
 
   const handleStartConversation = () => {
     const pk = decodePubkey(recipientInput);
-    if (!pk) {
-      toast({ title: 'Invalid pubkey', variant: 'destructive' });
-      return;
-    }
+    if (!pk) { toast({ title: 'Invalid pubkey', variant: 'destructive' }); return; }
     setActiveRecipient(pk);
-    if (!contacts.find(c => c.pubkey === pk)) {
-      setContacts(prev => [{ pubkey: pk, lastSeen: 0 }, ...prev]);
-    }
+    if (!contacts.find(c => c.pubkey === pk)) setContacts(prev => [{ pubkey: pk, lastSeen: 0 }, ...prev]);
   };
 
-  // ── Not logged in ──────────────────────────────────────────────────────────
   if (!user) {
     return (
       <AppLayout>
@@ -403,11 +389,9 @@ export function ShieldedPage() {
               <ShieldCheck className="h-12 w-12 mx-auto text-primary" />
               <p className="text-xl font-semibold">Private DMs (NIP-17)</p>
               <p className="text-muted-foreground text-sm max-w-md mx-auto">
-                NIP-17 uses NIP-44 encryption + NIP-59 gift wraps to hide metadata, sender, recipient, and timing.
+                End-to-end encrypted using NIP-44 + NIP-59 gift wraps. Works with browser extensions.
               </p>
-              <div className="flex justify-center">
-                <LoginArea className="max-w-xs" />
-              </div>
+              <div className="flex justify-center"><LoginArea className="max-w-xs" /></div>
             </CardContent>
           </Card>
         </div>
@@ -415,129 +399,112 @@ export function ShieldedPage() {
     );
   }
 
-  // ── Main UI ────────────────────────────────────────────────────────────────
   return (
     <AppLayout>
       <div className="max-w-5xl mx-auto space-y-4">
-        {/* Header */}
-        <div className="flex items-center gap-3">
-          <ShieldCheck className="h-6 w-6 text-primary" />
-          <div>
-            <h1 className="text-xl font-bold">Private DMs</h1>
-            <p className="text-xs text-muted-foreground">NIP-17 · NIP-44 encryption · NIP-59 gift wraps</p>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3">
+            <ShieldCheck className="h-6 w-6 text-primary" />
+            <div>
+              <h1 className="text-xl font-bold">Private DMs</h1>
+              <p className="text-xs text-muted-foreground">NIP-17 · NIP-44 · NIP-59 gift wraps</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {extensionSupportsNip44
+              ? <Badge className="gap-1 text-xs bg-green-500/20 text-green-700 dark:text-green-400 border-green-500/30"><CheckCircle2 className="h-3 w-3" />Extension NIP-44 ready</Badge>
+              : <Badge variant="secondary" className="gap-1 text-xs"><AlertCircle className="h-3 w-3" />Manual key needed for decrypt</Badge>
+            }
           </div>
         </div>
 
         <Alert>
           <ShieldCheck className="h-4 w-4" />
           <AlertDescription className="text-xs">
-            <strong>Maximum privacy:</strong> Messages are sealed with NIP-44 encryption and gift-wrapped (NIP-59) so relay operators see only that you received <em>something</em> — not who sent it, when, or what it says.
+            <strong>Extension signer:</strong> If your extension supports NIP-44 (Alby, nos2x-nip44, etc.), sending and decrypting works automatically. Otherwise enter your nsec below the decrypt button for decryption only.
           </AlertDescription>
         </Alert>
 
-        <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] gap-4 h-[calc(100vh-22rem)]">
-          {/* Sidebar: contacts + new convo */}
+        <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] gap-4 h-[calc(100vh-24rem)]">
+
+          {/* Sidebar */}
           <Card className="flex flex-col overflow-hidden">
             <CardHeader className="pb-2 shrink-0">
-              <CardTitle className="text-sm flex items-center justify-between">
-                <span className="flex items-center gap-2"><MessageSquare className="h-4 w-4" />Conversations</span>
-                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => refetch()} title="Refresh">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4" />Conversations
+                </span>
+                <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => refetch()}>
                   <RefreshCw className="h-3.5 w-3.5" />
                 </Button>
-              </CardTitle>
+              </div>
             </CardHeader>
 
-            <div className="px-3 pb-3 space-y-2 shrink-0">
+            <div className="px-3 pb-2 space-y-2 shrink-0">
               <div className="flex gap-1">
-                <Input
-                  placeholder="npub or hex pubkey…"
-                  value={recipientInput}
+                <Input placeholder="npub or hex…" value={recipientInput}
                   onChange={e => setRecipientInput(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleStartConversation()}
-                  className="text-xs h-8"
-                />
+                  className="text-xs h-8" />
                 <Button size="sm" className="h-8 px-2 shrink-0" onClick={handleStartConversation}>
                   <User className="h-3.5 w-3.5" />
                 </Button>
               </div>
 
               {/* Decrypt button */}
-              {wraps && wraps.length > 0 && messages.length === 0 && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="w-full h-7 text-xs gap-1"
-                  onClick={handleDecryptAll}
-                  disabled={isDecrypting}
-                >
+              {wraps && wraps.length > 0 && (
+                <Button size="sm" variant="outline" className="w-full h-7 text-xs gap-1"
+                  onClick={handleDecryptAll} disabled={isDecrypting}>
                   {isDecrypting
                     ? <><Loader2 className="h-3 w-3 animate-spin" />Decrypting…</>
                     : <><Lock className="h-3 w-3" />Decrypt {wraps.length} messages</>}
                 </Button>
               )}
-              {messages.length > 0 && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="w-full h-7 text-xs gap-1"
-                  onClick={handleDecryptAll}
-                  disabled={isDecrypting}
-                >
-                  {isDecrypting
-                    ? <><Loader2 className="h-3 w-3 animate-spin" />Re-decrypting…</>
-                    : <><RefreshCw className="h-3 w-3" />Re-decrypt</>}
+
+              {/* Manual key fallback */}
+              {showKeyInput && (
+                <div className="space-y-1 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+                  <p className="text-[10px] font-medium text-amber-700 dark:text-amber-400 flex items-center gap-1">
+                    <Key className="h-3 w-3" />nsec / hex key (decrypt only)
+                  </p>
+                  <Input type="password" placeholder="nsec1… or 64-char hex"
+                    value={manualKey} onChange={e => setManualKey(e.target.value)}
+                    className="text-xs h-7 font-mono" />
+                  <Button size="sm" className="w-full h-7 text-xs"
+                    onClick={() => { setShowKeyInput(false); handleDecryptAll(); }}>
+                    <CheckCircle2 className="h-3 w-3 mr-1" />Apply & Decrypt
+                  </Button>
+                  <p className="text-[10px] text-muted-foreground">Key stays in memory only — not saved anywhere.</p>
+                </div>
+              )}
+
+              {!showKeyInput && !extensionSupportsNip44 && (
+                <Button size="sm" variant="ghost" className="w-full h-6 text-[10px] gap-1"
+                  onClick={() => setShowKeyInput(true)}>
+                  <Key className="h-3 w-3" />Enter nsec for decryption
                 </Button>
               )}
             </div>
 
             <Separator />
 
-            {/* Private key input for decryption */}
-            {showPrivKeyInput && (
-              <div className="px-3 py-2 space-y-1 bg-amber-500/10 border-b">
-                <p className="text-xs text-amber-700 dark:text-amber-400 font-medium flex items-center gap-1">
-                  <Key className="h-3 w-3" />Private key needed for decryption
-                </p>
-                <Input
-                  type="password"
-                  placeholder="nsec1… or hex"
-                  value={privKeyForDecrypt}
-                  onChange={e => setPrivKeyForDecrypt(e.target.value)}
-                  className="text-xs h-7 font-mono"
-                />
-                <Button
-                  size="sm"
-                  className="w-full h-7 text-xs"
-                  onClick={() => { setShowPrivKeyInput(false); handleDecryptAll(); }}
-                >
-                  <CheckCircle2 className="h-3 w-3 mr-1" />Apply
-                </Button>
-                <p className="text-[10px] text-muted-foreground">Extension signers that don't expose private keys can't decrypt NIP-17 messages natively in this client yet.</p>
-              </div>
-            )}
-
-            {/* Contact list */}
             <div className="flex-1 overflow-y-auto px-2 py-1 space-y-0.5">
               {loadingWraps ? (
                 Array.from({ length: 3 }).map((_, i) => (
                   <div key={i} className="flex items-center gap-2 px-2 py-2">
-                    <Skeleton className="h-8 w-8 rounded-full" />
-                    <Skeleton className="h-4 flex-1" />
+                    <Skeleton className="h-8 w-8 rounded-full" /><Skeleton className="h-4 flex-1" />
                   </div>
                 ))
               ) : contacts.length === 0 ? (
                 <div className="py-8 text-center">
                   <Lock className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
-                  <p className="text-xs text-muted-foreground">No conversations yet.<br />Enter a pubkey above or decrypt messages.</p>
+                  <p className="text-xs text-muted-foreground">No conversations.<br />Enter a pubkey or decrypt messages.</p>
                 </div>
               ) : (
                 contacts.map(c => (
-                  <ContactRow
-                    key={c.pubkey}
-                    pubkey={c.pubkey}
+                  <ContactRow key={c.pubkey} pubkey={c.pubkey}
                     isActive={activeRecipient === c.pubkey}
-                    onClick={() => setActiveRecipient(c.pubkey)}
-                  />
+                    onClick={() => setActiveRecipient(c.pubkey)} />
                 ))
               )}
             </div>
@@ -546,76 +513,49 @@ export function ShieldedPage() {
           {/* Chat area */}
           <Card className="flex flex-col overflow-hidden">
             {!activeRecipient ? (
-              <CardContent className="flex-1 flex items-center justify-center">
+              <div className="flex-1 flex items-center justify-center">
                 <div className="text-center space-y-3">
                   <ShieldCheck className="h-12 w-12 mx-auto text-muted-foreground" />
                   <p className="font-medium">Select a conversation</p>
-                  <p className="text-sm text-muted-foreground max-w-xs">
-                    Or enter an npub above to start a new private conversation
-                  </p>
+                  <p className="text-sm text-muted-foreground max-w-xs">Or enter an npub to start a new private conversation</p>
                 </div>
-              </CardContent>
+              </div>
             ) : (
               <>
-                {/* Chat header */}
                 <RecipientHeader pubkey={activeRecipient} onBack={() => setActiveRecipient(null)} />
-
                 <Separator />
-
-                {/* Messages */}
                 <div className="flex-1 overflow-y-auto p-4 space-y-2">
                   {threadMessages.length === 0 ? (
-                    <div className="flex-1 flex items-center justify-center h-full">
+                    <div className="flex items-center justify-center h-full">
                       <div className="text-center space-y-2 py-8">
                         <Lock className="h-8 w-8 mx-auto text-muted-foreground" />
                         <p className="text-sm text-muted-foreground">
-                          {messages.length > 0
-                            ? 'No messages with this contact yet'
-                            : 'Decrypt messages to read them, or send your first message below'}
+                          {messages.length > 0 ? 'No messages with this contact' : 'Decrypt messages or send your first message'}
                         </p>
                       </div>
                     </div>
                   ) : (
-                    threadMessages.map(msg => (
-                      <MessageBubble key={msg.id} msg={msg} />
-                    ))
+                    threadMessages.map(msg => <MessageBubble key={msg.id} msg={msg} />)
                   )}
                   <div ref={endRef} />
                 </div>
-
                 <Separator />
-
-                {/* Compose area */}
                 <div className="p-3 space-y-2">
-                  <Input
-                    placeholder="Subject (optional)…"
-                    value={subjectInput}
-                    onChange={e => setSubjectInput(e.target.value)}
-                    className="h-7 text-xs"
-                  />
+                  <Input placeholder="Subject (optional)…" value={subjectInput}
+                    onChange={e => setSubjectInput(e.target.value)} className="h-7 text-xs" />
                   <div className="flex gap-2">
-                    <Textarea
-                      placeholder="Write a private message… (Ctrl+Enter to send)"
-                      value={messageInput}
-                      onChange={e => setMessageInput(e.target.value)}
+                    <Textarea placeholder="Write a private message… (Ctrl+Enter to send)"
+                      value={messageInput} onChange={e => setMessageInput(e.target.value)}
                       className="min-h-[60px] resize-none text-sm flex-1"
-                      onKeyDown={e => {
-                        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSend();
-                      }}
-                    />
-                    <Button
-                      className="h-auto self-stretch px-3"
-                      onClick={handleSend}
-                      disabled={isSending || !messageInput.trim()}
-                    >
-                      {isSending
-                        ? <Loader2 className="h-4 w-4 animate-spin" />
-                        : <Send className="h-4 w-4" />}
+                      onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSend(); }} />
+                    <Button className="h-auto self-stretch px-3" onClick={handleSend}
+                      disabled={isSending || !messageInput.trim()}>
+                      {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                     </Button>
                   </div>
                   <p className="text-[10px] text-muted-foreground flex items-center gap-1">
                     <ShieldCheck className="h-3 w-3" />
-                    Messages are sealed with NIP-44 and gift-wrapped (NIP-59) before publishing
+                    {extensionSupportsNip44 ? 'Encrypting via extension NIP-44 — no key exposure' : 'Using manual key for encryption'}
                   </p>
                 </div>
               </>
@@ -627,23 +567,20 @@ export function ShieldedPage() {
         <Card className="bg-muted/30">
           <CardContent className="p-4">
             <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
-              <Info className="h-4 w-4" />NIP-17 Privacy Features
+              <Info className="h-4 w-4" />NIP-17 Privacy + Extension Support
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-muted-foreground">
               {[
-                ['🔒', 'No metadata leak', 'Identities, times, and event kinds are all hidden'],
-                ['🎁', 'Gift wraps (NIP-59)', 'Each message is wrapped with an ephemeral key'],
-                ['🔑', 'NIP-44 encryption', 'XChaCha20-Poly1305 authenticated encryption'],
-                ['🕐', 'Randomised timestamps', 'Up to 2 days in the past to prevent correlation'],
-                ['📨', 'Per-recipient wraps', 'Separate encrypted envelope for each participant'],
-                ['🗑️', 'Deniable messages', 'Unsigned rumours cannot be attributed if leaked'],
+                ['🔌', 'Extension NIP-44', 'Alby / nos2x with NIP-44 support — no key needed'],
+                ['🔒', 'No metadata leak', 'Relay sees only gift wrap p-tag, not sender or content'],
+                ['🎁', 'NIP-59 gift wraps', 'Ephemeral signing key per message'],
+                ['🕐', 'Random timestamps', 'Up to 2 days past to prevent timing correlation'],
+                ['📨', 'Self-copy wrap', 'Sent messages readable by you'],
+                ['🗑️', 'Deniable rumours', 'Unsigned inner events cannot be attributed'],
               ].map(([icon, title, desc]) => (
-                <div key={title as string} className="flex gap-2">
+                <div key={String(title)} className="flex gap-2">
                   <span>{icon}</span>
-                  <div>
-                    <span className="font-medium text-foreground">{title}</span>
-                    <span className="text-muted-foreground"> — {desc}</span>
-                  </div>
+                  <div><span className="font-medium text-foreground">{title}</span> — {desc}</div>
                 </div>
               ))}
             </div>
@@ -651,31 +588,5 @@ export function ShieldedPage() {
         </Card>
       </div>
     </AppLayout>
-  );
-}
-
-function RecipientHeader({ pubkey, onBack }: { pubkey: string; onBack: () => void }) {
-  const author = useAuthor(pubkey);
-  const meta = author.data?.metadata;
-  const name = meta?.name ?? genUserName(pubkey);
-  const npub = nip19.npubEncode(pubkey);
-
-  return (
-    <div className="p-3 flex items-center gap-3 shrink-0">
-      <Button variant="ghost" size="sm" className="h-7 w-7 p-0 md:hidden" onClick={onBack}>
-        <ArrowLeft className="h-4 w-4" />
-      </Button>
-      <Avatar className="h-8 w-8">
-        <AvatarImage src={meta?.picture} />
-        <AvatarFallback className="text-xs">{name.slice(0, 2).toUpperCase()}</AvatarFallback>
-      </Avatar>
-      <div className="flex-1 min-w-0">
-        <p className="font-semibold text-sm truncate">{name}</p>
-        <p className="text-[10px] font-mono text-muted-foreground truncate">{npub.slice(0, 24)}…</p>
-      </div>
-      <Badge variant="secondary" className="text-[10px] gap-1 shrink-0">
-        <ShieldCheck className="h-2.5 w-2.5" />NIP-17
-      </Badge>
-    </div>
   );
 }

@@ -109,7 +109,7 @@ const NostrProvider: React.FC<NostrProviderProps> = (props) => {
 
         return [...allRelays];
       },
-      eoseTimeout: 200,
+      eoseTimeout: 4000,
     });
   }
 
