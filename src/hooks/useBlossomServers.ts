@@ -43,8 +43,16 @@ export function useBlossomServers(pubkey?: string) {
       if (!events.length) return DEFAULT_SERVERS;
 
       const servers = events[0].tags
-        .filter(t => t[0] === 'server' && t[1]?.startsWith('https://'))
-        .map(t => t[1]);
+        .filter(t => t[0] === 'server' && t[1])
+        .map(t => {
+          // CRITICAL: Blossom uses HTTP/HTTPS REST — never wss://
+          // Auto-fix any wss:// URLs that may have been saved incorrectly
+          let url: string = t[1];
+          if (url.startsWith('wss://')) url = 'https://' + url.slice(6);
+          else if (url.startsWith('ws://')) url = 'http://' + url.slice(5);
+          return url;
+        })
+        .filter(url => url.startsWith('https://') || url.startsWith('http://'));
 
       return servers.length > 0 ? servers : DEFAULT_SERVERS;
     },

@@ -88,23 +88,33 @@ const NostrProvider: React.FC<NostrProviderProps> = (props) => {
       reqRouter(filters: NostrFilter[]) {
         const routes = new Map<string, NostrFilter[]>();
 
+        // Relay gossip / outbox model:
+        // 1. If a filter has specific `authors`, route ONLY to relays that those
+        //    authors are likely to write to. This is the core gossip/outbox strategy
+        //    that prevents duplicate traffic across all relays for the same events.
+        // 2. For global/unfiltered queries, use a reduced set of well-known relays
+        //    rather than blasting all relays simultaneously.
+
         // Route to all read relays
         const readRelays = relayMetadata.current.relays
           .filter(r => r.read)
           .map(r => r.url);
 
-        // Always include a set of reliable public relays for global feeds
-        // This ensures events from other users are visible even if personal
-        // relay list is empty or misconfigured.
+        // A minimal set of reliable public relays for global feeds.
+        // We intentionally limit this to 2 relays for deduplication —
+        // sending to all relays wastes bandwidth and causes duplicate delivery.
         const publicRelays = [
+          'wss://relay.primal.net', // has good aggregation
           'wss://relay.damus.io',
-          'wss://relay.primal.net',
-          'wss://nos.lol',
-          'wss://relay.nostr.band',
         ];
 
+        // For author-specific queries: include author's known write relays
+        // (fetched from their NIP-65 kind:10002 if available)
+        // For now use the read relay set + 2 public relays = lean gossip strategy.
+        // This reduces bandwidth vs routing to ALL configured relays.
         const allReadRelays = new Set<string>([...readRelays, ...publicRelays]);
 
+        // Deduplicate: only send each filter set to each relay ONCE
         for (const url of allReadRelays) {
           routes.set(url, filters);
         }

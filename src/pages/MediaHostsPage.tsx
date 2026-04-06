@@ -79,7 +79,10 @@ export function MediaHostsPage() {
   const [uploadProgress, setUploadProgress] = useState(0);
 
   const probeHost = async (url: string) => {
-    const normalized = url.replace(/\/+$/, '');
+    // Protocol fix: Blossom uses HTTP/HTTPS — not WebSocket. Auto-correct wss:// URLs.
+    let normalized = url.trim().replace(/\/+$/, '');
+    if (normalized.startsWith('wss://')) normalized = 'https://' + normalized.slice(6);
+    else if (normalized.startsWith('ws://')) normalized = 'http://' + normalized.slice(5);
     setProbes(prev => ({ ...prev, [url]: { status: 'probing', message: 'Probing…' } }));
 
     const candidates = [
@@ -115,9 +118,15 @@ export function MediaHostsPage() {
   const probeAll = () => servers.forEach(s => probeHost(s));
 
   const addServer = () => {
-    const trimmed = newUrl.trim().replace(/\/+$/, '');
-    if (!trimmed || !trimmed.startsWith('https://')) {
-      toast({ title: 'Must start with https://', variant: 'destructive' });
+    let trimmed = newUrl.trim().replace(/\/+$/, '');
+    // Protocol fix: auto-correct wss:// → https://
+    if (trimmed.startsWith('wss://')) {
+      trimmed = 'https://' + trimmed.slice(6);
+    } else if (trimmed.startsWith('ws://')) {
+      trimmed = 'http://' + trimmed.slice(5);
+    }
+    if (!trimmed || (!trimmed.startsWith('https://') && !trimmed.startsWith('http://'))) {
+      toast({ title: 'Must start with https://', description: 'Blossom servers use HTTPS, not WebSocket (wss://)', variant: 'destructive' });
       return;
     }
     if (servers.includes(trimmed)) {

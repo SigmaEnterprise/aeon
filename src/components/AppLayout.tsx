@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { LoginArea } from '@/components/auth/LoginArea';
 import { WalletModal } from '@/components/WalletModal';
 import { AeonLogo } from '@/components/AeonLogo';
+import { NotificationsPanel } from '@/components/NotificationsPanel';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -28,14 +29,15 @@ const THEMES = [
 ];
 
 const NAV_ITEMS = [
-  { path: '/feed',         label: 'Feed',         icon: '📰' },
-  { path: '/custom-feed', label: 'Custom Feeds',  icon: '⭐' },
-  { path: '/profile',     label: 'Profile',       icon: '👤' },
-  { path: '/directory',   label: 'Directory',     icon: '📇' },
-  { path: '/shielded',    label: 'Private DMs',   icon: '🔒' },
-  { path: '/keys',        label: 'Keys',          icon: '🔑' },
-  { path: '/relays',      label: 'Relays',        icon: '🌐' },
-  { path: '/media-hosts', label: 'Media Hosts',   icon: '📦' },
+  { path: '/feed',           label: 'Feed',          icon: '📰' },
+  { path: '/custom-feed',   label: 'Custom Feeds',   icon: '⭐' },
+  { path: '/profile',       label: 'Profile',        icon: '👤' },
+  { path: '/directory',     label: 'Directory',      icon: '📇' },
+  { path: '/shielded',      label: 'Private DMs',    icon: '🔒' },
+  { path: '/keys',          label: 'Keys',           icon: '🔑' },
+  { path: '/relays',        label: 'Relays',         icon: '🌐' },
+  { path: '/media-hosts',   label: 'Media Hosts',    icon: '📦' },
+  { path: '/relay-explorer', label: 'Relay Explorer', icon: '🔭' },
 ];
 
 interface AppLayoutProps {
@@ -73,8 +75,8 @@ export function AppLayout({ children }: AppLayoutProps) {
             </Link>
           </div>
 
-          {/* Right: theme picker + login */}
-          <div className="flex items-center gap-3 ml-auto">
+          {/* Right: theme picker + notifications + login */}
+          <div className="flex items-center gap-2 ml-auto">
             <Select value={theme} onValueChange={setTheme}>
               <SelectTrigger className="w-[140px] h-8 text-xs">
                 <SelectValue placeholder="Theme" />
@@ -87,6 +89,10 @@ export function AppLayout({ children }: AppLayoutProps) {
                 ))}
               </SelectContent>
             </Select>
+
+            {/* 🔔 Notification bell — only shows when logged in */}
+            <NotificationsPanel />
+
             <LoginArea className="max-w-xs" />
           </div>
         </div>
