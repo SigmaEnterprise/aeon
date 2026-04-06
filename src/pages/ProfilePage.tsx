@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { useToast } from '@/hooks/useToast';
 import type { NostrEvent, NostrMetadata } from '@nostrify/nostrify';
+import { SupportButton } from '@/components/SupportButton';
 
 // ─── Mini profile card for follow lists ────────────────────────────────────
 function MiniProfileCard({ pubkey }: { pubkey: string }) {
@@ -410,6 +411,8 @@ export function ProfilePage() {
             </Card>
           </TabsContent>
         </Tabs>
+
+        <SupportButton />
       </div>
     </AppLayout>
   );

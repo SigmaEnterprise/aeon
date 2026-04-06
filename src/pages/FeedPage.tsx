@@ -22,6 +22,7 @@ import {
   Paperclip, Tag, Zap, Image as ImageIcon, Globe, Users, Search,
 } from 'lucide-react';
 import type { NostrEvent } from '@nostrify/nostrify';
+import { SupportButton } from '@/components/SupportButton';
 
 // ─── Feed mode ───────────────────────────────────────────────────────────────
 
@@ -435,6 +436,8 @@ export function FeedPage() {
             </>
           )}
         </div>
+
+        <SupportButton />
       </div>
     </AppLayout>
   );

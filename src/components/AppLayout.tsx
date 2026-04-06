@@ -4,6 +4,7 @@ import { LoginArea } from '@/components/auth/LoginArea';
 import { WalletModal } from '@/components/WalletModal';
 import { AeonLogo } from '@/components/AeonLogo';
 import { NotificationsPanel } from '@/components/NotificationsPanel';
+import { SupportButtonCompact } from '@/components/SupportButton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -138,6 +139,9 @@ export function AppLayout({ children }: AppLayoutProps) {
                   Lightning Wallet
                 </button>
               </WalletModal>
+
+              {/* Support the developer */}
+              <SupportButtonCompact />
 
               <a
                 href="https://shakespeare.diy"
