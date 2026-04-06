@@ -1,13 +1,14 @@
 {
   "relays": [
     "wss://relay.ditto.pub",
+    "wss://relay.dreamith.to",
     "wss://relay.nsite.lol",
     "wss://relay.nosto.re",
-    "wss://relay.primal.net",
-    "wss://relay.damus.io",
-    "wss://purplerelay.com"
+    "wss://relay.primal.net"
   ],
   "servers": [
+    "https://blossom.ditto.pub",
+    "https://blossom.dreamith.to",
     "https://blossom.primal.net",
     "https://cdn.sovbit.host"
   ],
@@ -16,6 +17,6 @@
   "description": "A Simple Dream Of A Nostr Client",
   "fallback": "/index.html",
   "gatewayHostnames": [
-    "nosto.re"
+    "shakespeare.to"
   ]
 }

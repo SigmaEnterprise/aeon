@@ -29,6 +29,16 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
 }
 
 /**
+ * BUD-11 spec: Authorization header MUST use Base64url without padding.
+ * Standard btoa() produces base64 with +, /, = which strict servers reject.
+ * This converts to the correct format: + → -, / → _, strip trailing =
+ */
+function base64urlEncode(str: string): string {
+  const b64 = btoa(unescape(encodeURIComponent(str)));
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/**
  * Normalize a Blossom server URL:
  *  - Strip trailing slashes
  *  - CRITICAL: Convert wss:// → https:// and ws:// → http://
@@ -72,39 +82,37 @@ async function buildBlossomAuth(
       ['t', 'upload'],
       ['x', fileHash],
       ['expiration', String(now + 300)], // 5 minutes
-      ['size', String(size)],
-      ['type', contentType || 'application/octet-stream'],
     ],
     created_at: now,
   });
-  return btoa(unescape(encodeURIComponent(JSON.stringify(event))));
+  // ✅ BUD-11 spec: Base64url WITHOUT padding (not standard base64)
+  return base64urlEncode(JSON.stringify(event));
 }
 
 /**
- * Check if a Blossom server is reachable and whether it requires auth.
- * Returns: 'ok' | 'auth-required' | 'error'
+ * Check if a Blossom server is reachable using BUD-01/02 protocol.
  *
- * Per the Blossom spec, GET /upload or HEAD on the server root may return:
- *  - 200: public server, no auth needed
- *  - 401/402: auth required (NIP-42)
- *  - Other 4xx/5xx: server error
+ * Uses HEAD /upload per BUD-02 spec — any non-5xx response proves the server
+ * is alive and supports the upload endpoint. This is the correct detection
+ * strategy vs checking NIP-96 paths which pure Blossom servers don't have.
+ *
+ * Returns: 'ok' | 'auth-required' | 'error'
  */
-async function checkBlossomServer(serverUrl: string, authToken?: string): Promise<'ok' | 'auth-required' | 'error'> {
+async function checkBlossomServer(serverUrl: string): Promise<'ok' | 'auth-required' | 'error'> {
   try {
-    const headers: HeadersInit = { Accept: 'application/json' };
-    if (authToken) {
-      headers['Authorization'] = 'Nostr ' + authToken;
-    }
-    const res = await fetch(serverUrl + '/', {
-      method: 'GET',
-      headers,
+    // BUD-02: HEAD /upload is the canonical probe for a Blossom server
+    const res = await fetch(serverUrl + '/upload', {
+      method: 'HEAD',
       signal: AbortSignal.timeout(8000),
     });
-    if (res.ok) return 'ok';
+    // Any response except 404/5xx means server is alive
+    if (res.status === 404 || res.status >= 500) return 'error';
     if (res.status === 401 || res.status === 402) return 'auth-required';
-    return 'error';
+    return 'ok';
   } catch {
-    return 'error';
+    // CORS pre-flight failure doesn't mean server is offline — try uploading anyway
+    // Many servers block HEAD from browsers but allow PUT with proper auth
+    return 'ok'; // optimistic — let the actual upload reveal any real failure
   }
 }
 
@@ -205,17 +213,18 @@ export function useUploadFile() {
       let lastError: Error | null = null;
       for (const server of servers) {
         try {
-          // Health check: verify server is up before uploading
-          // This catches the "Offline - No compatible endpoint found" error early
-          const serverStatus = await checkBlossomServer(server, authToken);
+          // Probe server: BUD-01 HEAD /upload. CORS may block this in browser
+          // so a 'catch' returns 'ok' (optimistic) — the real PUT will reveal errors.
+          const serverStatus = await checkBlossomServer(server);
 
           if (serverStatus === 'error') {
-            console.warn(`Blossom server unavailable: ${server}`);
-            lastError = new Error(`Server offline or unreachable: ${server}`);
+            console.warn(`Blossom server returned 404/5xx: ${server}`);
+            lastError = new Error(`Server offline or returned an error: ${server}`);
             continue;
           }
 
-          // auth-required status: still attempt upload (we already have auth token)
+          // Proceed with upload regardless of 'ok' or 'auth-required' —
+          // we always send the BUD-11 auth token.
           const uploadedUrl = await uploadToBlossom(server, file, fileBuffer, fileHash, authToken);
 
           // Return NIP-94 compatible tags
