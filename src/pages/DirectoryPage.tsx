@@ -1,12 +1,18 @@
 /**
  * DirectoryPage — VertexLab DVM-powered discovery
  *
- * Features:
- *  1. Top 50 Global Leaders  — Kind 5314 rank request, 24h cache
- *  2. Full-text profile search — Kind 5315 search request, live as-you-type (>3 chars)
- *  3. Error display for Kind 7000 DVM errors (rate limit, term too short, etc.)
+ * Top 50 tab  → Kind 5313 (Recommend Follows, sort: globalPagerank)
+ *               Returns the globally highest-ranked pubkeys to follow.
+ *               No `target` params — VertexLab computes the global leaders.
+ *               Results cached 24h in localStorage.
+ *
+ * Search tab  → Kind 5315 (Search Profiles, search: <query>)
+ *               Live search, >3 chars, debounced 600ms.
+ *               Direct npub/hex input bypasses DVM for instant lookup.
+ *
+ * Kind 7000 errors surface the exact message from the DVM status tag.
  */
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useSeoMeta } from '@unhead/react';
 import { useNavigate } from 'react-router-dom';
 import { useNostr } from '@nostrify/react';
@@ -16,7 +22,7 @@ import { AppLayout } from '@/components/AppLayout';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -26,14 +32,16 @@ import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useToast } from '@/hooks/useToast';
 import { genUserName } from '@/lib/genUserName';
 import {
-  fetchVertexRank, fetchVertexSearch,
+  fetchVertexRecommendFollows,
+  fetchVertexSearch,
+  clearVertexCache,
   useVertexSigner,
-  type VertexRankEntry, type VertexSearchEntry,
+  type VertexRankEntry,
 } from '@/hooks/useVertexDVM';
 import {
   Search, Copy, ExternalLink, Globe, Zap, BadgeCheck,
   Trophy, RefreshCw, AlertCircle, Loader2, TrendingUp,
-  Star, Award, Medal,
+  Star, Award, Medal, Users,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { NostrMetadata } from '@nostrify/nostrify';
@@ -42,18 +50,17 @@ import { SupportButton } from '@/components/SupportButton';
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 function decodePubkey(input: string): string | null {
-  const trimmed = input.trim();
-  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) return trimmed.toLowerCase();
+  const t = input.trim();
+  if (/^[0-9a-fA-F]{64}$/.test(t)) return t.toLowerCase();
   try {
-    const decoded = nip19.decode(trimmed);
-    if (decoded.type === 'npub') return decoded.data as string;
-    if (decoded.type === 'nprofile') return (decoded.data as { pubkey: string }).pubkey;
+    const d = nip19.decode(t);
+    if (d.type === 'npub') return d.data as string;
+    if (d.type === 'nprofile') return (d.data as { pubkey: string }).pubkey;
   } catch { /* ignore */ }
   return null;
 }
 
-// rank medal icons
-function RankBadge({ rank }: { rank: number }) {
+function RankMedal({ rank }: { rank: number }) {
   if (rank === 1) return <Award className="h-4 w-4 text-yellow-500" />;
   if (rank === 2) return <Medal className="h-4 w-4 text-slate-400" />;
   if (rank === 3) return <Medal className="h-4 w-4 text-amber-600" />;
@@ -61,7 +68,7 @@ function RankBadge({ rank }: { rank: number }) {
   return null;
 }
 
-// ─── Profile metadata fetcher ─────────────────────────────────────────────
+// ─── Batch metadata fetcher ───────────────────────────────────────────────
 
 function useProfilesMetadata(pubkeys: string[]) {
   const { nostr } = useNostr();
@@ -90,12 +97,17 @@ interface DirectoryCardProps {
   pubkey: string;
   rank?: number;
   rankScore?: number;
+  followers?: number;
+  follows?: number;
   metadata?: NostrMetadata;
   isLoading?: boolean;
   onCopy: (text: string, label: string) => void;
 }
 
-function DirectoryCard({ pubkey, rank, rankScore, metadata, isLoading, onCopy }: DirectoryCardProps) {
+function DirectoryCard({
+  pubkey, rank, rankScore, followers, follows,
+  metadata, isLoading, onCopy,
+}: DirectoryCardProps) {
   const navigate = useNavigate();
   const npub = nip19.npubEncode(pubkey);
   const displayName = metadata?.name ?? genUserName(pubkey);
@@ -110,7 +122,6 @@ function DirectoryCard({ pubkey, rank, rankScore, metadata, isLoading, onCopy }:
             <div className="flex-1 space-y-1.5">
               <Skeleton className="h-4 w-32" />
               <Skeleton className="h-3 w-48" />
-              <Skeleton className="h-3 w-24" />
             </div>
           </div>
         </CardContent>
@@ -122,13 +133,13 @@ function DirectoryCard({ pubkey, rank, rankScore, metadata, isLoading, onCopy }:
     <Card className="animate-fade-in hover:shadow-md transition-all duration-200 group">
       <CardContent className="p-4">
         <div className="flex items-start gap-3">
-          {/* Rank number */}
+          {/* Rank number + medal */}
           {rank !== undefined && (
             <div className="flex flex-col items-center gap-0.5 shrink-0 min-w-[2rem] pt-1">
               <span className="text-xs font-bold text-muted-foreground tabular-nums leading-none">
                 #{rank}
               </span>
-              <RankBadge rank={rank} />
+              <RankMedal rank={rank} />
             </div>
           )}
 
@@ -165,26 +176,37 @@ function DirectoryCard({ pubkey, rank, rankScore, metadata, isLoading, onCopy }:
                 {rankScore !== undefined && rankScore > 0 && (
                   <Badge variant="outline" className="text-[10px] px-1.5 py-0 gap-1 border-primary/30 text-primary">
                     <TrendingUp className="h-2.5 w-2.5" />
-                    {rankScore.toFixed(4)}
+                    {rankScore.toExponential(2)}
                   </Badge>
                 )}
               </div>
 
-              {/* npub — truncated, full on hover */}
+              {/* npub — full on hover */}
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <p className="text-[10px] font-mono text-muted-foreground cursor-default">{shortNpub}</p>
+                  <p className="text-[10px] font-mono text-muted-foreground cursor-default mt-0.5">{shortNpub}</p>
                 </TooltipTrigger>
-                <TooltipContent side="bottom" className="font-mono text-xs max-w-xs break-all">
-                  {npub}
-                </TooltipContent>
+                <TooltipContent side="bottom" className="font-mono text-xs max-w-xs break-all">{npub}</TooltipContent>
               </Tooltip>
             </div>
 
             {metadata?.about && (
-              <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">
-                {metadata.about}
-              </p>
+              <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">{metadata.about}</p>
+            )}
+
+            {/* Stats from VertexLab */}
+            {(followers !== undefined || follows !== undefined) && (
+              <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+                {followers !== undefined && (
+                  <span className="flex items-center gap-1">
+                    <Users className="h-2.5 w-2.5" />
+                    {followers.toLocaleString()} followers
+                  </span>
+                )}
+                {follows !== undefined && (
+                  <span>{follows.toLocaleString()} following</span>
+                )}
+              </div>
             )}
 
             <div className="flex flex-wrap gap-2">
@@ -203,12 +225,14 @@ function DirectoryCard({ pubkey, rank, rankScore, metadata, isLoading, onCopy }:
               )}
             </div>
 
-            {/* Actions — visible on hover */}
-            <div className="flex flex-wrap gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-              <Button variant="outline" size="sm" className="h-6 text-[10px] px-2 gap-1" onClick={() => onCopy(npub, 'npub')}>
+            {/* Actions — revealed on hover */}
+            <div className="flex flex-wrap gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <Button variant="outline" size="sm" className="h-6 text-[10px] px-2 gap-1"
+                onClick={() => onCopy(npub, 'npub')}>
                 <Copy className="h-2.5 w-2.5" />npub
               </Button>
-              <Button variant="outline" size="sm" className="h-6 text-[10px] px-2 gap-1" onClick={() => onCopy(pubkey, 'hex')}>
+              <Button variant="outline" size="sm" className="h-6 text-[10px] px-2 gap-1"
+                onClick={() => onCopy(pubkey, 'hex')}>
                 <Copy className="h-2.5 w-2.5" />hex
               </Button>
               <Button variant="outline" size="sm" className="h-6 text-[10px] px-2 gap-1" asChild>
@@ -216,8 +240,9 @@ function DirectoryCard({ pubkey, rank, rankScore, metadata, isLoading, onCopy }:
                   <ExternalLink className="h-2.5 w-2.5" />njump
                 </a>
               </Button>
-              <Button variant="outline" size="sm" className="h-6 text-[10px] px-2 gap-1" onClick={() => navigate(`/${npub}`)}>
-                View Profile
+              <Button variant="outline" size="sm" className="h-6 text-[10px] px-2 gap-1"
+                onClick={() => navigate(`/${npub}`)}>
+                Profile
               </Button>
             </div>
           </div>
@@ -227,32 +252,29 @@ function DirectoryCard({ pubkey, rank, rankScore, metadata, isLoading, onCopy }:
   );
 }
 
-// ─── Top 50 section ───────────────────────────────────────────────────────
+// ─── Top 50 section — Kind 5313 ───────────────────────────────────────────
 
 function Top50Section() {
   const signer = useVertexSigner();
   const { user } = useCurrentUser();
   const { toast } = useToast();
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  const [forceRefresh, setForceRefresh] = useState(0);
-
-  const {
-    data: rankEntries,
-    isLoading,
-    isError,
-    error,
-    refetch,
-    isFetching,
-  } = useQuery<VertexRankEntry[]>({
-    queryKey: ['vertex-top50', forceRefresh],
-    queryFn: async () => {
-      if (!signer) throw new Error('Login required to use VertexLab ranking');
-      return fetchVertexRank(signer, { sort: 'globalPagerank', limit: 50 });
-    },
-    enabled: !!signer,
-    staleTime: 24 * 60 * 60 * 1000, // 24h — matches localStorage cache
-    retry: 1,
-  });
+  const { data: rankEntries, isLoading, isError, error, isFetching, refetch } =
+    useQuery<VertexRankEntry[]>({
+      queryKey: ['vertex-top50', refreshKey],
+      queryFn: async () => {
+        if (!signer) throw new Error('Login required to use VertexLab ranking');
+        // Kind 5313: Recommend Follows — global leaders, no targets needed
+        return fetchVertexRecommendFollows(signer, {
+          sort: 'globalPagerank',
+          limit: 50,
+        });
+      },
+      enabled: !!signer,
+      staleTime: 24 * 60 * 60 * 1000,
+      retry: 1,
+    });
 
   const pubkeys = rankEntries?.map(e => e.pubkey) ?? [];
   const { data: metaMap = {}, isLoading: metaLoading } = useProfilesMetadata(pubkeys);
@@ -263,13 +285,8 @@ function Top50Section() {
   };
 
   const handleForceRefresh = () => {
-    // Clear the 24h cache and re-fetch
-    try {
-      const keys = Object.keys(localStorage).filter(k => k.startsWith('vertex:rank:'));
-      keys.forEach(k => localStorage.removeItem(k));
-    } catch { /* ignore */ }
-    setForceRefresh(n => n + 1);
-    refetch();
+    clearVertexCache();
+    setRefreshKey(n => n + 1);
   };
 
   if (!user) {
@@ -279,39 +296,25 @@ function Top50Section() {
           <Trophy className="h-10 w-10 mx-auto text-muted-foreground" />
           <p className="text-sm font-medium">Login to see Top 50 Leaders</p>
           <p className="text-xs text-muted-foreground">
-            VertexLab ranking requires a signed DVM request (kind:5314). Log in with your Nostr key.
+            VertexLab ranking requires a signed DVM request (kind:5313).
+            Log in with your Nostr key to continue.
           </p>
         </CardContent>
       </Card>
     );
   }
 
-  if (isError) {
-    return (
-      <Alert variant="destructive">
-        <AlertCircle className="h-4 w-4" />
-        <AlertDescription className="text-sm">
-          {(error as Error).message}
-          <Button variant="link" size="sm" className="p-0 h-auto ml-2" onClick={() => refetch()}>
-            Retry
-          </Button>
-        </AlertDescription>
-      </Alert>
-    );
-  }
-
   return (
     <div className="space-y-4">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h3 className="font-semibold flex items-center gap-2">
             <Trophy className="h-4 w-4 text-yellow-500" />
             Global Top 50
-            <Badge variant="secondary" className="text-xs">VertexLab PageRank</Badge>
+            <Badge variant="secondary" className="text-xs">kind:5313</Badge>
           </h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Ranked by global PageRank · refreshes every 24 hours
+            Recommend Follows · globalPagerank · refreshes every 24 hours
           </p>
         </div>
         <Button
@@ -325,12 +328,23 @@ function Top50Section() {
         </Button>
       </div>
 
-      {/* Loading state */}
+      {isError && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="text-sm">
+            {(error as Error).message}
+            <Button variant="link" size="sm" className="p-0 h-auto ml-2" onClick={() => refetch()}>
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+
       {(isLoading || isFetching) && !rankEntries && (
         <div className="space-y-3">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Querying VertexLab DVM (kind:5314)…
+            Querying VertexLab (kind:5313 → 6313)…
           </div>
           {Array.from({ length: 6 }).map((_, i) => (
             <Card key={i} className="animate-pulse">
@@ -349,7 +363,6 @@ function Top50Section() {
         </div>
       )}
 
-      {/* Results */}
       {rankEntries && rankEntries.length > 0 && (
         <div className="space-y-2">
           {rankEntries.map((entry, idx) => (
@@ -358,6 +371,8 @@ function Top50Section() {
               pubkey={entry.pubkey}
               rank={idx + 1}
               rankScore={entry.rank}
+              followers={entry.followers}
+              follows={entry.follows}
               metadata={metaMap[entry.pubkey]}
               isLoading={metaLoading && !metaMap[entry.pubkey]}
               onCopy={handleCopy}
@@ -366,10 +381,10 @@ function Top50Section() {
         </div>
       )}
 
-      {rankEntries && rankEntries.length === 0 && !isLoading && (
+      {rankEntries?.length === 0 && !isLoading && !isError && (
         <Card className="border-dashed">
           <CardContent className="py-8 text-center text-muted-foreground text-sm">
-            No ranking data returned from VertexLab. Try refreshing.
+            No ranking data returned. Try refreshing.
           </CardContent>
         </Card>
       )}
@@ -377,56 +392,46 @@ function Top50Section() {
   );
 }
 
-// ─── Search section ───────────────────────────────────────────────────────
+// ─── Search section — Kind 5315 ───────────────────────────────────────────
 
 function SearchSection() {
   const signer = useVertexSigner();
   const { user } = useCurrentUser();
-  const { toast } = useToast();
   const { nostr } = useNostr();
+  const { toast } = useToast();
 
   const [searchInput, setSearchInput] = useState('');
   const [activeSearch, setActiveSearch] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Debounce search: fire after 600ms of no typing when >3 chars
   const handleInput = useCallback((value: string) => {
     setSearchInput(value);
     setIsTyping(true);
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       setIsTyping(false);
-      if (value.trim().length > 3) {
-        setActiveSearch(value.trim());
-      } else if (value.trim().length === 0) {
-        setActiveSearch('');
-      }
+      if (value.trim().length > 3) setActiveSearch(value.trim());
+      else if (!value.trim()) setActiveSearch('');
     }, 600);
   }, []);
 
-  // Check if input is a direct npub/hex — skip DVM and fetch directly
   const directPubkey = decodePubkey(activeSearch);
 
-  // ── Vertex Kind 5315 search ──
-  const {
-    data: vertexResults,
-    isLoading: vertexLoading,
-    isError: vertexError,
-    error: vertexErr,
-  } = useQuery<VertexSearchEntry[]>({
-    queryKey: ['vertex-search', activeSearch],
-    queryFn: async () => {
-      if (!signer) throw new Error('Login required for VertexLab search');
-      if (directPubkey) return []; // handled by direct lookup
-      return fetchVertexSearch(signer, { query: activeSearch, limit: 50, sort: 'globalPagerank' });
-    },
-    enabled: !!activeSearch && !directPubkey && !!signer && activeSearch.length > 3,
-    staleTime: 30000,
-    retry: 1,
-  });
+  // Kind 5315 search
+  const { data: searchResults, isLoading: searchLoading, isError: searchError, error: searchErr } =
+    useQuery<VertexRankEntry[]>({
+      queryKey: ['vertex-search', activeSearch],
+      queryFn: async () => {
+        if (!signer) throw new Error('Login required for VertexLab search');
+        return fetchVertexSearch(signer, { query: activeSearch, limit: 50 });
+      },
+      enabled: !!activeSearch && !directPubkey && !!signer && activeSearch.length > 3,
+      staleTime: 30000,
+      retry: 1,
+    });
 
-  // ── Direct pubkey lookup (fallback for npub/hex input) ──
+  // Direct pubkey lookup
   const { data: directMeta } = useQuery({
     queryKey: ['profile-direct', directPubkey ?? ''],
     queryFn: async () => {
@@ -442,20 +447,18 @@ function SearchSection() {
     staleTime: 5 * 60 * 1000,
   });
 
-  const pubkeys = vertexResults?.map(e => e.pubkey) ?? [];
-  const { data: metaMap = {} } = useProfilesMetadata(pubkeys);
+  const { data: metaMap = {} } = useProfilesMetadata(searchResults?.map(e => e.pubkey) ?? []);
 
   const handleCopy = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
     toast({ title: `${label} copied!` });
   };
 
-  const isSearching = vertexLoading || isTyping;
+  const isSearching = searchLoading || isTyping;
   const hasQuery = activeSearch.length > 0;
 
   return (
     <div className="space-y-4">
-      {/* Search input */}
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
@@ -463,26 +466,24 @@ function SearchSection() {
           value={searchInput}
           onChange={e => handleInput(e.target.value)}
           className="pl-9"
+          autoComplete="off"
         />
         {isSearching && (
           <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />
         )}
       </div>
 
-      {/* Hint */}
       {searchInput.length > 0 && searchInput.length <= 3 && (
         <p className="text-xs text-muted-foreground">Enter at least 4 characters to search…</p>
       )}
 
-      {/* DVM status */}
       {isSearching && hasQuery && !directPubkey && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Searching the relay (kind:5315)…
+          Searching the relay (kind:5315 → 6315)…
         </div>
       )}
 
-      {/* No login warning */}
       {!user && hasQuery && !directPubkey && (
         <Alert>
           <AlertCircle className="h-4 w-4" />
@@ -493,12 +494,12 @@ function SearchSection() {
         </Alert>
       )}
 
-      {/* Vertex error display (kind:7000) */}
-      {vertexError && (
+      {/* Kind 7000 error display */}
+      {searchError && (
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
           <AlertDescription className="text-sm">
-            {(vertexErr as Error).message}
+            {(searchErr as Error).message}
           </AlertDescription>
         </Alert>
       )}
@@ -506,23 +507,19 @@ function SearchSection() {
       {/* Direct pubkey result */}
       {directPubkey && directMeta && (
         <div className="space-y-2">
-          <p className="text-xs text-muted-foreground">Direct lookup result:</p>
-          <DirectoryCard
-            pubkey={directPubkey}
-            metadata={directMeta}
-            onCopy={handleCopy}
-          />
+          <p className="text-xs text-muted-foreground">Direct lookup:</p>
+          <DirectoryCard pubkey={directPubkey} metadata={directMeta} onCopy={handleCopy} />
         </div>
       )}
 
-      {/* Vertex search results */}
-      {vertexResults && vertexResults.length > 0 && (
+      {/* Search results */}
+      {searchResults && searchResults.length > 0 && (
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground flex items-center gap-1">
             <TrendingUp className="h-3 w-3" />
-            {vertexResults.length} results · sorted by VertexLab PageRank
+            {searchResults.length} results · sorted by VertexLab PageRank
           </p>
-          {vertexResults.map((entry, idx) => (
+          {searchResults.map((entry, idx) => (
             <DirectoryCard
               key={entry.pubkey}
               pubkey={entry.pubkey}
@@ -535,27 +532,20 @@ function SearchSection() {
         </div>
       )}
 
-      {/* No results */}
-      {vertexResults?.length === 0 && !vertexLoading && hasQuery && !directPubkey && !isTyping && (
+      {searchResults?.length === 0 && !searchLoading && hasQuery && !directPubkey && !isTyping && (
         <Card className="border-dashed">
           <CardContent className="py-8 text-center">
             <p className="text-muted-foreground text-sm">No profiles found for "{activeSearch}"</p>
-            <p className="text-xs text-muted-foreground mt-1">Try a different name or paste an npub directly.</p>
           </CardContent>
         </Card>
       )}
 
-      {/* Empty state */}
       {!hasQuery && (
         <Card className="border-dashed">
           <CardContent className="py-10 text-center space-y-2">
             <Search className="h-8 w-8 mx-auto text-muted-foreground" />
-            <p className="text-sm text-muted-foreground">
-              Search any Nostr profile by name, npub, or hex pubkey
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Powered by VertexLab DVM (kind:5315) · ranked by global PageRank
-            </p>
+            <p className="text-sm text-muted-foreground">Search any Nostr profile by name, npub, or hex pubkey</p>
+            <p className="text-xs text-muted-foreground">Powered by VertexLab kind:5315 · ranked by globalPagerank</p>
           </CardContent>
         </Card>
       )}
@@ -563,7 +553,7 @@ function SearchSection() {
   );
 }
 
-// ─── Main DirectoryPage ───────────────────────────────────────────────────
+// ─── Main page ────────────────────────────────────────────────────────────
 
 export function DirectoryPage() {
   useSeoMeta({
@@ -574,8 +564,6 @@ export function DirectoryPage() {
   return (
     <AppLayout>
       <div className="max-w-2xl mx-auto space-y-6">
-
-        {/* Page header */}
         <Card className="border-primary/20 shadow-sm bg-gradient-to-br from-card to-primary/5">
           <CardHeader className="pb-3">
             <CardTitle className="text-xl flex items-center gap-2">
@@ -583,43 +571,34 @@ export function DirectoryPage() {
               VertexLab Directory
             </CardTitle>
             <CardDescription>
-              Algorithmically ranked Nostr profiles powered by{' '}
-              <a
-                href="https://vertexlab.io"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline font-medium"
-              >
+              Algorithmically ranked profiles powered by{' '}
+              <a href="https://vertexlab.io" target="_blank" rel="noopener noreferrer"
+                className="text-primary hover:underline font-medium">
                 VertexLab
               </a>
-              {' '}Web of Trust · Global PageRank · DVM Search
+              {' '}· Global PageRank · Web of Trust · DVM Search
             </CardDescription>
           </CardHeader>
         </Card>
 
-        {/* Tabs */}
         <Tabs defaultValue="top50">
           <TabsList className="w-full grid grid-cols-2">
             <TabsTrigger value="top50" className="gap-2">
-              <Trophy className="h-4 w-4" />
-              Top 50 Leaders
+              <Trophy className="h-4 w-4" />Top 50 Leaders
             </TabsTrigger>
             <TabsTrigger value="search" className="gap-2">
-              <Search className="h-4 w-4" />
-              Search Profiles
+              <Search className="h-4 w-4" />Search Profiles
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="top50" className="mt-4">
             <Top50Section />
           </TabsContent>
-
           <TabsContent value="search" className="mt-4">
             <SearchSection />
           </TabsContent>
         </Tabs>
 
-        {/* Support CTA */}
         <SupportButton />
       </div>
     </AppLayout>
