@@ -345,18 +345,20 @@ function NpubBadge({ pubkey }: { pubkey: string }) {
 }
 
 // ─── Inline comment item (recursive) ─────────────────────────────────────────
+// Handles both kind:1 NIP-10 replies and kind:1111 NIP-22 comments.
+// `onReply` is injected by the parent so the publish strategy stays in one place.
 
 interface InlineCommentItemProps {
   root: NostrEvent;
   comment: NostrEvent;
   depth?: number;
   allComments: NostrEvent[];
+  onReply: (parentComment: NostrEvent, text: string) => Promise<void>;
 }
 
-function InlineCommentItem({ root, comment, depth = 0, allComments }: InlineCommentItemProps) {
+function InlineCommentItem({ root, comment, depth = 0, allComments, onReply }: InlineCommentItemProps) {
   const navigate = useNavigate();
   const { user } = useCurrentUser();
-  const { mutate: postComment, isPending } = usePostComment();
   const { toast } = useToast();
   const author = useAuthor(comment.pubkey);
   const metadata = author.data?.metadata;
@@ -366,10 +368,21 @@ function InlineCommentItem({ root, comment, depth = 0, allComments }: InlineComm
   const [showReplyForm, setShowReplyForm] = useState(false);
   const [showReplies, setShowReplies] = useState(depth < 1);
   const [replyText, setReplyText] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Direct replies to this comment
+  // Find direct replies: for NIP-10 kind 1 replies look for the last `e` tag pointing here;
+  // for NIP-22 kind 1111 replies look for lowercase `e` tag pointing here.
   const directReplies = allComments.filter(c => {
+    if (c.kind === 1) {
+      // NIP-10: the "reply" marker e-tag, or simply the last e-tag
+      const replyTag = c.tags.find(t => t[0] === 'e' && t[3] === 'reply');
+      if (replyTag) return replyTag[1] === comment.id;
+      // Fallback: last e-tag (for clients that don't use markers)
+      const eTags = c.tags.filter(t => t[0] === 'e');
+      return eTags.length > 0 && eTags[eTags.length - 1][1] === comment.id;
+    }
+    // NIP-22: lowercase e tag = parent reference
     const eTag = c.tags.find(([name]) => name === 'e')?.[1];
     return eTag === comment.id;
   }).sort((a, b) => a.created_at - b.created_at);
@@ -391,21 +404,21 @@ function InlineCommentItem({ root, comment, depth = 0, allComments }: InlineComm
     }
   }, [showReplyForm]);
 
-  const handleSubmitReply = (e: React.FormEvent) => {
+  const handleSubmitReply = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!replyText.trim() || !user) return;
-    postComment(
-      { content: replyText.trim(), root, reply: comment },
-      {
-        onSuccess: () => {
-          toast({ title: 'Reply posted!' });
-          setReplyText('');
-          setShowReplyForm(false);
-          setShowReplies(true);
-        },
-        onError: () => toast({ title: 'Failed to post reply', variant: 'destructive' }),
-      }
-    );
+    if (!replyText.trim() || !user || isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      await onReply(comment, replyText.trim());
+      setReplyText('');
+      setShowReplyForm(false);
+      setShowReplies(true);
+      toast({ title: 'Reply posted!' });
+    } catch {
+      toast({ title: 'Failed to post reply', variant: 'destructive' });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -472,7 +485,7 @@ function InlineCommentItem({ root, comment, depth = 0, allComments }: InlineComm
 
       {/* Inline reply form */}
       {showReplyForm && (
-        <div className={cn('mt-2', depth > 0 ? 'ml-9' : 'ml-9')}>
+        <div className="mt-2 ml-9">
           <form onSubmit={handleSubmitReply} className="flex gap-2 items-end">
             <Textarea
               ref={textareaRef}
@@ -480,16 +493,16 @@ function InlineCommentItem({ root, comment, depth = 0, allComments }: InlineComm
               onChange={e => setReplyText(e.target.value)}
               placeholder={`Reply to ${displayName}…`}
               className="min-h-[64px] text-sm resize-none flex-1"
-              disabled={isPending}
+              disabled={isSubmitting}
               onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSubmitReply(e); }}
             />
             <Button
               type="submit"
               size="sm"
-              disabled={!replyText.trim() || isPending}
+              disabled={!replyText.trim() || isSubmitting}
               className="mb-0.5 shrink-0"
             >
-              {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+              {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
             </Button>
           </form>
           <p className="text-[10px] text-muted-foreground mt-0.5 ml-0.5">Ctrl+Enter to send</p>
@@ -506,6 +519,7 @@ function InlineCommentItem({ root, comment, depth = 0, allComments }: InlineComm
               comment={reply}
               depth={depth + 1}
               allComments={allComments}
+              onReply={onReply}
             />
           ))}
         </div>
@@ -515,6 +529,15 @@ function InlineCommentItem({ root, comment, depth = 0, allComments }: InlineComm
 }
 
 // ─── Inline comments panel ────────────────────────────────────────────────────
+//
+// Strategy:
+//  • kind:1 notes  → NIP-10: replies are kind:1 events with e-tags (fetched by
+//                    useEventEngagement). New replies published as kind:1 + NIP-10 tags.
+//  • kind:30023 +  → NIP-22: replies are kind:1111 (fetched by useComments).
+//    other kinds      New replies published as kind:1111.
+//
+// This matches the Nostr spec exactly. NIP-22 explicitly states that kind:1111
+// MUST NOT be used to reply to kind:1 notes.
 
 interface InlineCommentsPanelProps {
   event: NostrEvent;
@@ -523,14 +546,36 @@ interface InlineCommentsPanelProps {
 
 function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
   const { user } = useCurrentUser();
-  const { mutate: postComment, isPending } = usePostComment();
+  const { mutateAsync: publishEvent } = useNostrPublish();
+  const { mutate: postComment, isPending: isPostingComment } = usePostComment();
   const { toast } = useToast();
-  const { data, isLoading } = useComments(event, 300);
+
+  // For kind:1 notes — use the engagement hook (kind 1 NIP-10 replies)
+  const isKind1 = event.kind === 1;
+  const { data: engagementData, isLoading: engagementLoading, refetch: refetchEngagement } =
+    useEventEngagement(event.id, isKind1 && isOpen);
+
+  // For other kinds (30023 articles, etc.) — use the NIP-22 comments hook
+  const { data: commentsData, isLoading: commentsLoading } =
+    useComments(event, 300);
+
   const [text, setText] = useState('');
+  const [isSubmittingKind1, setIsSubmittingKind1] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const topLevel = data?.topLevelComments ?? [];
-  const allComments = data?.allComments ?? [];
+  // Derive the list to render
+  const isLoading = isKind1 ? engagementLoading : commentsLoading;
+
+  // For kind:1: all replies are "top-level" from the engagement hook
+  const kind1Replies: NostrEvent[] = engagementData?.replies ?? [];
+
+  // For NIP-22: use the threaded structure
+  const nip22TopLevel: NostrEvent[] = commentsData?.topLevelComments ?? [];
+  const nip22AllComments: NostrEvent[] = commentsData?.allComments ?? [];
+
+  const topLevel = isKind1 ? kind1Replies : nip22TopLevel;
+  // allComments used for thread resolution inside InlineCommentItem
+  const allComments = isKind1 ? kind1Replies : nip22AllComments;
 
   useEffect(() => {
     if (isOpen) {
@@ -540,7 +585,60 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // ── Publish strategy ──────────────────────────────────────────────────────
+  // Top-level comment on a kind:1 post → NIP-10 kind:1 reply
+  const handleSubmitKind1 = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!text.trim() || !user || isSubmittingKind1) return;
+    setIsSubmittingKind1(true);
+
+    // Determine root for NIP-10 threading
+    const existingRoot = event.tags.find(t => t[0] === 'e' && t[3] === 'root');
+    const rootId = existingRoot ? existingRoot[1] : event.id;
+
+    try {
+      await publishEvent({
+        kind: 1,
+        content: text.trim(),
+        tags: [
+          ['e', rootId, '', 'root'],
+          ['e', event.id, '', 'reply'],
+          ['p', event.pubkey],
+        ],
+        created_at: Math.floor(Date.now() / 1000),
+      });
+      toast({ title: 'Reply posted!' });
+      setText('');
+      // Refetch engagement to show the new reply
+      setTimeout(() => refetchEngagement(), 800);
+    } catch {
+      toast({ title: 'Failed to post reply', variant: 'destructive' });
+    } finally {
+      setIsSubmittingKind1(false);
+    }
+  };
+
+  // Reply to a kind:1 comment → also a NIP-10 kind:1 reply
+  const handleReplyToKind1Comment = async (parentComment: NostrEvent, replyText: string) => {
+    const existingRoot = event.tags.find(t => t[0] === 'e' && t[3] === 'root');
+    const rootId = existingRoot ? existingRoot[1] : event.id;
+
+    await publishEvent({
+      kind: 1,
+      content: replyText,
+      tags: [
+        ['e', rootId, '', 'root'],
+        ['e', parentComment.id, '', 'reply'],
+        ['p', parentComment.pubkey],
+        ['p', event.pubkey],
+      ],
+      created_at: Math.floor(Date.now() / 1000),
+    });
+    setTimeout(() => refetchEngagement(), 800);
+  };
+
+  // Top-level comment on a non-kind:1 event → NIP-22 kind:1111
+  const handleSubmitNip22 = (e: React.FormEvent) => {
     e.preventDefault();
     if (!text.trim() || !user) return;
     postComment(
@@ -555,12 +653,26 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
     );
   };
 
+  // Reply to a NIP-22 kind:1111 comment → another kind:1111
+  const handleReplyToNip22Comment = async (parentComment: NostrEvent, replyText: string) => {
+    await new Promise<void>((resolve, reject) => {
+      postComment(
+        { content: replyText, root: event, reply: parentComment },
+        { onSuccess: () => resolve(), onError: reject }
+      );
+    });
+  };
+
+  const handleSubmit = isKind1 ? handleSubmitKind1 : handleSubmitNip22;
+  const isSubmitting = isKind1 ? isSubmittingKind1 : isPostingComment;
+  const onReply = isKind1 ? handleReplyToKind1Comment : handleReplyToNip22Comment;
+
   return (
     <div className="border-t bg-muted/20 px-4 py-4 space-y-4 animate-fade-in">
       {/* Header */}
       <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
         <MessageSquare className="h-3.5 w-3.5" />
-        Comments {!isLoading && `(${topLevel.length})`}
+        {isKind1 ? 'Replies' : 'Comments'} {!isLoading && `(${topLevel.length})`}
       </p>
 
       {/* Compose box */}
@@ -570,28 +682,28 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
             ref={textareaRef}
             value={text}
             onChange={e => setText(e.target.value)}
-            placeholder="Write a comment…"
+            placeholder={isKind1 ? 'Write a reply…' : 'Write a comment…'}
             className="min-h-[80px] text-sm resize-none bg-background"
-            disabled={isPending}
+            disabled={isSubmitting}
             onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSubmit(e); }}
           />
           <div className="flex items-center justify-between">
             <span className="text-[10px] text-muted-foreground">Ctrl+Enter to send</span>
-            <Button type="submit" size="sm" disabled={!text.trim() || isPending} className="gap-1.5">
-              {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-              {isPending ? 'Posting…' : 'Comment'}
+            <Button type="submit" size="sm" disabled={!text.trim() || isSubmitting} className="gap-1.5">
+              {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+              {isSubmitting ? 'Posting…' : isKind1 ? 'Reply' : 'Comment'}
             </Button>
           </div>
         </form>
       ) : (
         <div className="text-center py-3 rounded-lg border border-dashed bg-background/50">
           <p className="text-sm text-muted-foreground">
-            <Link to="/" className="text-primary underline underline-offset-2">Log in</Link> to leave a comment
+            <Link to="/" className="text-primary underline underline-offset-2">Log in</Link> to {isKind1 ? 'reply' : 'leave a comment'}
           </p>
         </div>
       )}
 
-      {/* Comments list */}
+      {/* Comments / replies list */}
       {isLoading ? (
         <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => (
@@ -606,7 +718,7 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
         </div>
       ) : topLevel.length === 0 ? (
         <p className="text-xs text-muted-foreground text-center py-3">
-          No comments yet — be the first!
+          No {isKind1 ? 'replies' : 'comments'} yet — be the first!
         </p>
       ) : (
         <div className="space-y-4">
@@ -617,6 +729,7 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
               comment={comment}
               depth={0}
               allComments={allComments}
+              onReply={onReply}
             />
           ))}
         </div>
@@ -643,8 +756,11 @@ function EngagementBar({
   onToggleComments: () => void;
 }) {
   const { data: engagement } = useEventEngagement(eventId);
+  // kind:1 notes use NIP-10 replies counted by engagement; other kinds use NIP-22
   const { data: commentsData } = useComments(event, 500);
-  const commentCount = commentsData?.topLevelComments?.length ?? 0;
+  const commentCount = event.kind === 1
+    ? (engagement?.replyCount ?? 0)
+    : (commentsData?.topLevelComments?.length ?? 0);
 
   return (
     <div className="flex items-center gap-0.5 w-full">
