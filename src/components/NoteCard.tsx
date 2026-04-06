@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useRef, useEffect } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
 import { type NostrEvent } from '@nostrify/nostrify';
 import { nip19 } from 'nostr-tools';
 import { formatDistanceToNow } from 'date-fns';
@@ -9,11 +9,14 @@ import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Textarea } from '@/components/ui/textarea';
 import { useAuthor } from '@/hooks/useAuthor';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostrPublish } from '@/hooks/useNostrPublish';
 import { useToast } from '@/hooks/useToast';
 import { useEventEngagement } from '@/hooks/useEventEngagement';
+import { useComments } from '@/hooks/useComments';
+import { usePostComment } from '@/hooks/usePostComment';
 import { NoteContent } from '@/components/NoteContent';
 import { ZapButton } from '@/components/ZapButton';
 import type { Event as NostrToolsEvent } from 'nostr-tools';
@@ -37,6 +40,9 @@ import {
   Image as ImageIcon,
   Zap,
   Check,
+  Send,
+  Loader2,
+  CornerDownRight,
 } from 'lucide-react';
 
 interface NoteCardProps {
@@ -338,75 +344,280 @@ function NpubBadge({ pubkey }: { pubkey: string }) {
   );
 }
 
-// ─── Thread reply item ────────────────────────────────────────────────────────
+// ─── Inline comment item (recursive) ─────────────────────────────────────────
 
-function ReplyItem({ event, depth = 0 }: { event: NostrEvent; depth?: number }) {
+interface InlineCommentItemProps {
+  root: NostrEvent;
+  comment: NostrEvent;
+  depth?: number;
+  allComments: NostrEvent[];
+}
+
+function InlineCommentItem({ root, comment, depth = 0, allComments }: InlineCommentItemProps) {
   const navigate = useNavigate();
-  const author = useAuthor(event.pubkey);
+  const { user } = useCurrentUser();
+  const { mutate: postComment, isPending } = usePostComment();
+  const { toast } = useToast();
+  const author = useAuthor(comment.pubkey);
   const metadata = author.data?.metadata;
-  const displayName = metadata?.name ?? genUserName(event.pubkey);
-  const npub = nip19.npubEncode(event.pubkey);
-  const timeAgo = formatDistanceToNow(new Date(event.created_at * 1000), { addSuffix: true });
+  const displayName = metadata?.name ?? genUserName(comment.pubkey);
+  const npub = nip19.npubEncode(comment.pubkey);
+  const timeAgo = formatDistanceToNow(new Date(comment.created_at * 1000), { addSuffix: true });
+  const [showReplyForm, setShowReplyForm] = useState(false);
+  const [showReplies, setShowReplies] = useState(depth < 1);
+  const [replyText, setReplyText] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Direct replies to this comment
+  const directReplies = allComments.filter(c => {
+    const eTag = c.tags.find(([name]) => name === 'e')?.[1];
+    return eTag === comment.id;
+  }).sort((a, b) => a.created_at - b.created_at);
+
+  const hasReplies = directReplies.length > 0;
+
+  const handleToggleReply = () => {
+    if (!user) {
+      toast({ title: 'Login required', description: 'Please log in to reply.', variant: 'destructive' });
+      return;
+    }
+    setShowReplyForm(v => !v);
+    if (!showReplies) setShowReplies(true);
+  };
+
+  useEffect(() => {
+    if (showReplyForm) {
+      setTimeout(() => textareaRef.current?.focus(), 50);
+    }
+  }, [showReplyForm]);
+
+  const handleSubmitReply = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!replyText.trim() || !user) return;
+    postComment(
+      { content: replyText.trim(), root, reply: comment },
+      {
+        onSuccess: () => {
+          toast({ title: 'Reply posted!' });
+          setReplyText('');
+          setShowReplyForm(false);
+          setShowReplies(true);
+        },
+        onError: () => toast({ title: 'Failed to post reply', variant: 'destructive' }),
+      }
+    );
+  };
 
   return (
-    <div className={cn('flex gap-2.5', depth > 0 && 'ml-6 border-l-2 border-border/50 pl-3')}>
-      <Avatar
-        className="h-7 w-7 shrink-0 cursor-pointer mt-0.5"
-        onClick={() => navigate(`/${npub}`)}
-      >
-        <AvatarImage src={metadata?.picture} alt={displayName} />
-        <AvatarFallback className="text-[10px] font-bold">{displayName.slice(0, 2).toUpperCase()}</AvatarFallback>
-      </Avatar>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span
-            className="text-xs font-semibold cursor-pointer hover:underline"
-            onClick={() => navigate(`/${npub}`)}
-          >
-            {displayName}
-          </span>
-          <NpubBadge pubkey={event.pubkey} />
-          <span className="text-[10px] text-muted-foreground">{timeAgo}</span>
+    <div className={cn('group', depth > 0 && 'ml-5 border-l-2 border-border/40 pl-3 mt-2')}>
+      {/* Comment bubble */}
+      <div className="flex gap-2.5">
+        <Avatar
+          className="h-7 w-7 shrink-0 cursor-pointer mt-0.5 hover:opacity-80 transition-opacity"
+          onClick={() => navigate(`/${npub}`)}
+        >
+          <AvatarImage src={metadata?.picture} alt={displayName} />
+          <AvatarFallback className="text-[10px] font-bold bg-primary/10 text-primary">
+            {displayName.slice(0, 2).toUpperCase()}
+          </AvatarFallback>
+        </Avatar>
+
+        <div className="flex-1 min-w-0">
+          {/* Author + time */}
+          <div className="flex items-baseline gap-2 flex-wrap mb-0.5">
+            <span
+              className="text-xs font-semibold cursor-pointer hover:underline"
+              onClick={() => navigate(`/${npub}`)}
+            >
+              {displayName}
+            </span>
+            <span className="text-[10px] text-muted-foreground">{timeAgo}</span>
+          </div>
+
+          {/* Content */}
+          <div className="text-sm leading-relaxed text-foreground/90">
+            <NoteContent event={comment} className="text-sm" />
+          </div>
+
+          {/* Action row */}
+          <div className="flex items-center gap-1 mt-1.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn(
+                'h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground gap-1',
+                showReplyForm && 'text-primary'
+              )}
+              onClick={handleToggleReply}
+            >
+              <CornerDownRight className="h-3 w-3" />
+              {showReplyForm ? 'Cancel' : 'Reply'}
+            </Button>
+
+            {hasReplies && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground gap-1"
+                onClick={() => setShowReplies(v => !v)}
+              >
+                <MessageSquare className="h-3 w-3" />
+                {directReplies.length} {directReplies.length === 1 ? 'reply' : 'replies'}
+                {showReplies ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+              </Button>
+            )}
+          </div>
         </div>
-        <div className="text-xs mt-0.5 text-foreground/90 leading-relaxed whitespace-pre-wrap break-words">
-          <NoteContent event={event} className="text-xs" />
-        </div>
-        <MediaAttachments event={event} />
       </div>
+
+      {/* Inline reply form */}
+      {showReplyForm && (
+        <div className={cn('mt-2', depth > 0 ? 'ml-9' : 'ml-9')}>
+          <form onSubmit={handleSubmitReply} className="flex gap-2 items-end">
+            <Textarea
+              ref={textareaRef}
+              value={replyText}
+              onChange={e => setReplyText(e.target.value)}
+              placeholder={`Reply to ${displayName}…`}
+              className="min-h-[64px] text-sm resize-none flex-1"
+              disabled={isPending}
+              onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSubmitReply(e); }}
+            />
+            <Button
+              type="submit"
+              size="sm"
+              disabled={!replyText.trim() || isPending}
+              className="mb-0.5 shrink-0"
+            >
+              {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+            </Button>
+          </form>
+          <p className="text-[10px] text-muted-foreground mt-0.5 ml-0.5">Ctrl+Enter to send</p>
+        </div>
+      )}
+
+      {/* Nested replies */}
+      {hasReplies && showReplies && (
+        <div className="mt-2 space-y-2">
+          {directReplies.map(reply => (
+            <InlineCommentItem
+              key={reply.id}
+              root={root}
+              comment={reply}
+              depth={depth + 1}
+              allComments={allComments}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-// ─── Thread view ──────────────────────────────────────────────────────────────
+// ─── Inline comments panel ────────────────────────────────────────────────────
 
-function ThreadView({ eventId, isOpen }: { eventId: string; isOpen: boolean }) {
-  const { data, isLoading } = useEventEngagement(eventId, isOpen);
+interface InlineCommentsPanelProps {
+  event: NostrEvent;
+  isOpen: boolean;
+}
+
+function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
+  const { user } = useCurrentUser();
+  const { mutate: postComment, isPending } = usePostComment();
+  const { toast } = useToast();
+  const { data, isLoading } = useComments(event, 300);
+  const [text, setText] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const topLevel = data?.topLevelComments ?? [];
+  const allComments = data?.allComments ?? [];
+
+  useEffect(() => {
+    if (isOpen) {
+      setTimeout(() => textareaRef.current?.focus(), 80);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!text.trim() || !user) return;
+    postComment(
+      { content: text.trim(), root: event },
+      {
+        onSuccess: () => {
+          toast({ title: 'Comment posted!' });
+          setText('');
+        },
+        onError: () => toast({ title: 'Failed to post comment', variant: 'destructive' }),
+      }
+    );
+  };
+
   return (
-    <div className="border-t bg-muted/20 px-4 py-3 space-y-3 animate-fade-in">
-      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-        Replies {data ? `(${data.replyCount})` : ''}
+    <div className="border-t bg-muted/20 px-4 py-4 space-y-4 animate-fade-in">
+      {/* Header */}
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+        <MessageSquare className="h-3.5 w-3.5" />
+        Comments {!isLoading && `(${topLevel.length})`}
       </p>
+
+      {/* Compose box */}
+      {user ? (
+        <form onSubmit={handleSubmit} className="space-y-2">
+          <Textarea
+            ref={textareaRef}
+            value={text}
+            onChange={e => setText(e.target.value)}
+            placeholder="Write a comment…"
+            className="min-h-[80px] text-sm resize-none bg-background"
+            disabled={isPending}
+            onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSubmit(e); }}
+          />
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-muted-foreground">Ctrl+Enter to send</span>
+            <Button type="submit" size="sm" disabled={!text.trim() || isPending} className="gap-1.5">
+              {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+              {isPending ? 'Posting…' : 'Comment'}
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <div className="text-center py-3 rounded-lg border border-dashed bg-background/50">
+          <p className="text-sm text-muted-foreground">
+            <Link to="/" className="text-primary underline underline-offset-2">Log in</Link> to leave a comment
+          </p>
+        </div>
+      )}
+
+      {/* Comments list */}
       {isLoading ? (
         <div className="space-y-3">
-          {Array.from({ length: 2 }).map((_, i) => (
+          {Array.from({ length: 3 }).map((_, i) => (
             <div key={i} className="flex gap-2.5">
               <Skeleton className="h-7 w-7 rounded-full shrink-0" />
-              <div className="flex-1 space-y-1">
+              <div className="flex-1 space-y-1.5">
                 <Skeleton className="h-3 w-24" />
-                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-10 w-full rounded-md" />
               </div>
             </div>
           ))}
         </div>
-      ) : !data || data.replies.length === 0 ? (
-        <p className="text-xs text-muted-foreground text-center py-2">No replies yet — be the first!</p>
+      ) : topLevel.length === 0 ? (
+        <p className="text-xs text-muted-foreground text-center py-3">
+          No comments yet — be the first!
+        </p>
       ) : (
-        <div className="space-y-3">
-          {data.replies.map(reply => (
-            <ReplyItem key={reply.id} event={reply} />
+        <div className="space-y-4">
+          {topLevel.map(comment => (
+            <InlineCommentItem
+              key={comment.id}
+              root={event}
+              comment={comment}
+              depth={0}
+              allComments={allComments}
+            />
           ))}
         </div>
       )}
@@ -418,44 +629,46 @@ function ThreadView({ eventId, isOpen }: { eventId: string; isOpen: boolean }) {
 
 function EngagementBar({
   eventId,
-  onReply,
+  event,
   onRepost,
   onLike,
-  event,
-  showThread,
-  onToggleThread,
+  showComments,
+  onToggleComments,
 }: {
   eventId: string;
-  onReply: () => void;
+  event: NostrEvent;
   onRepost: () => void;
   onLike: () => void;
-  event: NostrEvent;
-  showThread: boolean;
-  onToggleThread: () => void;
+  showComments: boolean;
+  onToggleComments: () => void;
 }) {
-  const { data } = useEventEngagement(eventId);
+  const { data: engagement } = useEventEngagement(eventId);
+  const { data: commentsData } = useComments(event, 500);
+  const commentCount = commentsData?.topLevelComments?.length ?? 0;
 
   return (
     <div className="flex items-center gap-0.5 w-full">
-      {/* Reply — shows count, click to toggle thread */}
+      {/* Comments — shows count, click toggles inline panel */}
       <Tooltip>
         <TooltipTrigger asChild>
           <Button
             variant="ghost"
             size="sm"
             className={cn(
-              'h-8 px-2 text-muted-foreground hover:text-foreground gap-1.5',
-              showThread && 'text-foreground bg-accent'
+              'h-8 px-2 text-muted-foreground hover:text-foreground gap-1.5 transition-colors',
+              showComments && 'text-primary bg-primary/10 hover:text-primary'
             )}
-            onClick={onToggleThread}
+            onClick={onToggleComments}
           >
             <MessageSquare className="h-4 w-4" />
-            {data && data.replyCount > 0 && (
-              <span className="text-xs tabular-nums">{data.replyCount}</span>
+            {commentCount > 0 && (
+              <span className="text-xs tabular-nums font-medium">{commentCount}</span>
             )}
           </Button>
         </TooltipTrigger>
-        <TooltipContent>{showThread ? 'Hide replies' : `${data?.replyCount ?? 0} replies`}</TooltipContent>
+        <TooltipContent>
+          {showComments ? 'Hide comments' : commentCount > 0 ? `${commentCount} comments` : 'Add comment'}
+        </TooltipContent>
       </Tooltip>
 
       {/* Repost */}
@@ -473,21 +686,21 @@ function EngagementBar({
         <TooltipTrigger asChild>
           <Button variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground hover:text-red-500 gap-1.5" onClick={onLike}>
             <Heart className="h-4 w-4" />
-            {data && data.reactionCount > 0 && (
-              <span className="text-xs tabular-nums">{data.reactionCount}</span>
+            {engagement && engagement.reactionCount > 0 && (
+              <span className="text-xs tabular-nums">{engagement.reactionCount}</span>
             )}
           </Button>
         </TooltipTrigger>
-        <TooltipContent>{data?.reactionCount ?? 0} likes</TooltipContent>
+        <TooltipContent>{engagement?.reactionCount ?? 0} likes</TooltipContent>
       </Tooltip>
 
       {/* Zap — shows count and sats */}
       <div className="flex items-center">
         <ZapButton target={event as unknown as NostrToolsEvent} />
-        {data && data.zapCount > 0 && (
+        {engagement && engagement.zapCount > 0 && (
           <span className="text-xs tabular-nums text-yellow-600 dark:text-yellow-400 -ml-1 flex items-center gap-0.5">
             <Zap className="h-3 w-3" />
-            {data.zapTotal > 0 ? `${data.zapTotal.toLocaleString()}` : data.zapCount}
+            {engagement.zapTotal > 0 ? `${engagement.zapTotal.toLocaleString()}` : engagement.zapCount}
           </span>
         )}
       </div>
@@ -503,7 +716,9 @@ function ArticleCard({ event, className }: NoteCardProps) {
   const author = useAuthor(event.pubkey);
   const { mutate: publishEvent } = useNostrPublish();
   const { toast } = useToast();
-  const [showThread, setShowThread] = useState(false);
+  const { data: commentsData } = useComments(event, 500);
+  const [showComments, setShowComments] = useState(false);
+  const commentCount = commentsData?.topLevelComments?.length ?? 0;
 
   const metadata = author.data?.metadata;
   const displayName = metadata?.name ?? genUserName(event.pubkey);
@@ -606,13 +821,17 @@ function ArticleCard({ event, className }: NoteCardProps) {
             <TooltipTrigger asChild>
               <Button
                 variant="ghost" size="sm"
-                className={cn('h-8 px-2 text-muted-foreground hover:text-foreground gap-1.5', showThread && 'text-foreground bg-accent')}
-                onClick={() => setShowThread(!showThread)}
+                className={cn(
+                  'h-8 px-2 text-muted-foreground hover:text-foreground gap-1.5 transition-colors',
+                  showComments && 'text-primary bg-primary/10 hover:text-primary'
+                )}
+                onClick={() => setShowComments(v => !v)}
               >
                 <MessageSquare className="h-4 w-4" />
+                {commentCount > 0 && <span className="text-xs tabular-nums font-medium">{commentCount}</span>}
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Replies</TooltipContent>
+            <TooltipContent>{showComments ? 'Hide comments' : commentCount > 0 ? `${commentCount} comments` : 'Add comment'}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -631,7 +850,7 @@ function ArticleCard({ event, className }: NoteCardProps) {
             </Button>
           </div>
         </div>
-        <ThreadView eventId={event.id} isOpen={showThread} />
+        <InlineCommentsPanel event={event} isOpen={showComments} />
       </CardFooter>
     </Card>
   );
@@ -650,9 +869,7 @@ export function NoteCard({ event, className, depth = 0 }: NoteCardProps) {
   const { mutate: publishEvent } = useNostrPublish();
   const { toast } = useToast();
   const [showActions, setShowActions] = useState(false);
-  const [isReplying, setIsReplying] = useState(false);
-  const [replyText, setReplyText] = useState('');
-  const [showThread, setShowThread] = useState(false);
+  const [showComments, setShowComments] = useState(false);
 
   const metadata = author.data?.metadata;
   const npub = nip19.npubEncode(event.pubkey);
@@ -703,39 +920,6 @@ export function NoteCard({ event, className, depth = 0 }: NoteCardProps) {
       {
         onSuccess: () => toast({ title: 'Liked!' }),
         onError: () => toast({ title: 'Failed to like', variant: 'destructive' }),
-      }
-    );
-  };
-
-  const handleReply = () => {
-    if (!user) {
-      toast({ title: 'Login required', description: 'Please log in to reply.', variant: 'destructive' });
-      return;
-    }
-    if (!replyText.trim()) return;
-
-    const rootTag = event.tags.find(t => t[0] === 'e' && t[3] === 'root');
-    const rootId = rootTag ? rootTag[1] : event.id;
-
-    publishEvent(
-      {
-        kind: 1,
-        content: replyText,
-        tags: [
-          ['e', rootId, '', 'root'],
-          ['e', event.id, '', 'reply'],
-          ['p', event.pubkey],
-        ],
-        created_at: Math.floor(Date.now() / 1000),
-      },
-      {
-        onSuccess: () => {
-          toast({ title: 'Reply sent!' });
-          setReplyText('');
-          setIsReplying(false);
-          setShowThread(true); // auto-open thread after replying
-        },
-        onError: () => toast({ title: 'Failed to reply', variant: 'destructive' }),
       }
     );
   };
@@ -831,12 +1015,11 @@ export function NoteCard({ event, className, depth = 0 }: NoteCardProps) {
         <div className="flex items-center w-full">
           <EngagementBar
             eventId={event.id}
-            onReply={() => setIsReplying(!isReplying)}
+            event={event}
             onRepost={handleRepost}
             onLike={handleLike}
-            event={event}
-            showThread={showThread}
-            onToggleThread={() => setShowThread(!showThread)}
+            showComments={showComments}
+            onToggleComments={() => setShowComments(v => !v)}
           />
 
           <div className="ml-auto flex items-center gap-1">
@@ -885,26 +1068,10 @@ export function NoteCard({ event, className, depth = 0 }: NoteCardProps) {
             </Button>
           </div>
         )}
-
-        {/* Reply box */}
-        {isReplying && (
-          <div className="w-full animate-fade-in space-y-2 pt-1 pb-2">
-            <textarea
-              className="w-full min-h-[80px] rounded-md border bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none"
-              placeholder={`Reply to ${displayName}...`}
-              value={replyText}
-              onChange={e => setReplyText(e.target.value)}
-            />
-            <div className="flex gap-2 justify-end">
-              <Button variant="ghost" size="sm" onClick={() => { setIsReplying(false); setReplyText(''); }}>Cancel</Button>
-              <Button size="sm" onClick={handleReply} disabled={!replyText.trim()}>Reply</Button>
-            </div>
-          </div>
-        )}
       </CardFooter>
 
-      {/* Thread view — inline below the card footer */}
-      <ThreadView eventId={event.id} isOpen={showThread} />
+      {/* Inline comments panel — slides open below the footer */}
+      <InlineCommentsPanel event={event} isOpen={showComments} />
     </Card>
   );
 }
