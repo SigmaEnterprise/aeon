@@ -3,13 +3,13 @@ import { useSeoMeta } from '@unhead/react';
 import { AppLayout } from '@/components/AppLayout';
 import { NoteCard } from '@/components/NoteCard';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { MentionTextarea } from '@/components/MentionTextarea';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostrPublish } from '@/hooks/useNostrPublish';
 import { useUploadFile } from '@/hooks/useUploadFile';
@@ -19,7 +19,7 @@ import { useFollowList } from '@/hooks/useFollowList';
 import { cn } from '@/lib/utils';
 import {
   Loader2, RefreshCw, PauseCircle, PlayCircle, Send,
-  Paperclip, Tag, Zap, Image as ImageIcon, Globe, Users, Search,
+  Paperclip, Tag, Zap, Image as ImageIcon, Globe, Users, Search, AtSign,
 } from 'lucide-react';
 import type { NostrEvent } from '@nostrify/nostrify';
 import { SupportButton } from '@/components/SupportButton';
@@ -27,6 +27,30 @@ import { SupportButton } from '@/components/SupportButton';
 // ─── Feed mode ───────────────────────────────────────────────────────────────
 
 type FeedMode = 'global' | 'following' | 'search';
+
+// ─── Mention badge (shown under compose box) ──────────────────────────────────
+
+import { useAuthor } from '@/hooks/useAuthor';
+import { genUserName } from '@/lib/genUserName';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { X } from 'lucide-react';
+
+function MentionBadge({ pubkey, onRemove }: { pubkey: string; onRemove: () => void }) {
+  const author = useAuthor(pubkey);
+  const displayName = author.data?.metadata?.name ?? genUserName(pubkey);
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 text-primary text-[11px] font-medium px-2 py-0.5 ring-1 ring-primary/20">
+      <Avatar className="h-3.5 w-3.5">
+        <AvatarImage src={author.data?.metadata?.picture} />
+        <AvatarFallback className="text-[7px]">{displayName.slice(0, 1).toUpperCase()}</AvatarFallback>
+      </Avatar>
+      @{displayName}
+      <button type="button" onClick={onRemove} className="ml-0.5 hover:text-destructive transition-colors">
+        <X className="h-2.5 w-2.5" />
+      </button>
+    </span>
+  );
+}
 
 // ─── Skeleton rows ────────────────────────────────────────────────────────────
 
@@ -72,7 +96,12 @@ export function FeedPage() {
   const [paused, setPaused] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
+  const [mentionedPubkeys, setMentionedPubkeys] = useState<Set<string>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleMentionSelect = (pubkey: string) => {
+    setMentionedPubkeys(prev => new Set([...prev, pubkey]));
+  };
 
   // ── Feed mode ──────────────────────────────────────────────────────────────
   const [feedMode, setFeedMode] = useState<FeedMode>('global');
@@ -156,6 +185,11 @@ export function FeedPage() {
 
     tags.split(',').map(t => t.trim()).filter(Boolean).forEach(tag => eventTags.push(['t', tag]));
 
+    // NIP-27: add p tags for every mentioned pubkey so they get notified
+    for (const pubkey of mentionedPubkeys) {
+      eventTags.push(['p', pubkey]);
+    }
+
     publishEvent(
       { kind: 1, content: finalContent, tags: eventTags, created_at: Math.floor(Date.now() / 1000) },
       {
@@ -164,6 +198,7 @@ export function FeedPage() {
           setContent('');
           setTags('');
           setSelectedFile(null);
+          setMentionedPubkeys(new Set());
           setComposeOpen(false);
           if (fileInputRef.current) fileInputRef.current.value = '';
           refetch();
@@ -236,13 +271,30 @@ export function FeedPage() {
         {composeOpen && user && (
           <Card className="shadow-sm animate-fade-in border-primary/30">
             <CardContent className="pt-4 space-y-3">
-              <Textarea
-                placeholder="What's on your mind?"
+              {/* Mention hint */}
+              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <AtSign className="h-3 w-3" />
+                <span>Type <kbd className="px-1 py-0.5 rounded bg-muted font-mono text-[10px]">@name</kbd> to mention someone</span>
+              </div>
+              <MentionTextarea
                 value={content}
-                onChange={e => setContent(e.target.value)}
-                className="min-h-[90px] resize-none"
+                onChange={setContent}
+                onMentionSelect={handleMentionSelect}
+                placeholder="What's on your mind?"
+                minHeight="90px"
                 onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handlePublish(); }}
               />
+              {/* Mentioned pubkeys badge strip */}
+              {mentionedPubkeys.size > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[10px] text-muted-foreground">Mentioning:</span>
+                  {[...mentionedPubkeys].map(pk => (
+                    <MentionBadge key={pk} pubkey={pk} onRemove={() => {
+                      setMentionedPubkeys(prev => { const next = new Set(prev); next.delete(pk); return next; });
+                    }} />
+                  ))}
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1">

@@ -9,7 +9,6 @@ import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Textarea } from '@/components/ui/textarea';
 import { useAuthor } from '@/hooks/useAuthor';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostrPublish } from '@/hooks/useNostrPublish';
@@ -18,6 +17,7 @@ import { useEventEngagement } from '@/hooks/useEventEngagement';
 import { useComments } from '@/hooks/useComments';
 import { usePostComment } from '@/hooks/usePostComment';
 import { NoteContent } from '@/components/NoteContent';
+import { MentionTextarea } from '@/components/MentionTextarea';
 import { ZapButton } from '@/components/ZapButton';
 import type { Event as NostrToolsEvent } from 'nostr-tools';
 import { genUserName } from '@/lib/genUserName';
@@ -353,7 +353,7 @@ interface InlineCommentItemProps {
   comment: NostrEvent;
   depth?: number;
   allComments: NostrEvent[];
-  onReply: (parentComment: NostrEvent, text: string) => Promise<void>;
+  onReply: (parentComment: NostrEvent, text: string, mentions?: Set<string>) => Promise<void>;
 }
 
 function InlineCommentItem({ root, comment, depth = 0, allComments, onReply }: InlineCommentItemProps) {
@@ -368,6 +368,7 @@ function InlineCommentItem({ root, comment, depth = 0, allComments, onReply }: I
   const [showReplyForm, setShowReplyForm] = useState(false);
   const [showReplies, setShowReplies] = useState(depth < 1);
   const [replyText, setReplyText] = useState('');
+  const [replyMentions, setReplyMentions] = useState<Set<string>>(new Set());
   const [isSubmitting, setIsSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -409,8 +410,9 @@ function InlineCommentItem({ root, comment, depth = 0, allComments, onReply }: I
     if (!replyText.trim() || !user || isSubmitting) return;
     setIsSubmitting(true);
     try {
-      await onReply(comment, replyText.trim());
+      await onReply(comment, replyText.trim(), replyMentions);
       setReplyText('');
+      setReplyMentions(new Set());
       setShowReplyForm(false);
       setShowReplies(true);
       toast({ title: 'Reply posted!' });
@@ -486,26 +488,29 @@ function InlineCommentItem({ root, comment, depth = 0, allComments, onReply }: I
       {/* Inline reply form */}
       {showReplyForm && (
         <div className="mt-2 ml-9">
-          <form onSubmit={handleSubmitReply} className="flex gap-2 items-end">
-            <Textarea
-              ref={textareaRef}
-              value={replyText}
-              onChange={e => setReplyText(e.target.value)}
-              placeholder={`Reply to ${displayName}…`}
-              className="min-h-[64px] text-sm resize-none flex-1"
-              disabled={isSubmitting}
-              onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSubmitReply(e); }}
-            />
-            <Button
-              type="submit"
-              size="sm"
-              disabled={!replyText.trim() || isSubmitting}
-              className="mb-0.5 shrink-0"
-            >
-              {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-            </Button>
+          <form onSubmit={handleSubmitReply} className="space-y-1.5">
+            <div className="flex gap-2 items-end">
+              <MentionTextarea
+                textareaRef={textareaRef}
+                value={replyText}
+                onChange={setReplyText}
+                onMentionSelect={pk => setReplyMentions(prev => new Set([...prev, pk]))}
+                placeholder={`Reply to ${displayName}… (@ to mention)`}
+                minHeight="64px"
+                disabled={isSubmitting}
+                onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSubmitReply(e); }}
+              />
+              <Button
+                type="submit"
+                size="sm"
+                disabled={!replyText.trim() || isSubmitting}
+                className="mb-0.5 shrink-0"
+              >
+                {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+              </Button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">Ctrl+Enter to send · @ to mention</p>
           </form>
-          <p className="text-[10px] text-muted-foreground mt-0.5 ml-0.5">Ctrl+Enter to send</p>
         </div>
       )}
 
@@ -560,6 +565,7 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
     useComments(event, 300);
 
   const [text, setText] = useState('');
+  const [mentionedPubkeys, setMentionedPubkeys] = useState<Set<string>>(new Set());
   const [isSubmittingKind1, setIsSubmittingKind1] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -596,6 +602,12 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
     const existingRoot = event.tags.find(t => t[0] === 'e' && t[3] === 'root');
     const rootId = existingRoot ? existingRoot[1] : event.id;
 
+    // Build p-tags: original author + any @mentions (NIP-27)
+    const pTags: string[][] = [['p', event.pubkey]];
+    for (const pk of mentionedPubkeys) {
+      if (pk !== event.pubkey) pTags.push(['p', pk]);
+    }
+
     try {
       await publishEvent({
         kind: 1,
@@ -603,12 +615,13 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
         tags: [
           ['e', rootId, '', 'root'],
           ['e', event.id, '', 'reply'],
-          ['p', event.pubkey],
+          ...pTags,
         ],
         created_at: Math.floor(Date.now() / 1000),
       });
       toast({ title: 'Reply posted!' });
       setText('');
+      setMentionedPubkeys(new Set());
       // Refetch engagement to show the new reply
       setTimeout(() => refetchEngagement(), 800);
     } catch {
@@ -619,9 +632,25 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
   };
 
   // Reply to a kind:1 comment → also a NIP-10 kind:1 reply
-  const handleReplyToKind1Comment = async (parentComment: NostrEvent, replyText: string) => {
+  const handleReplyToKind1Comment = async (
+    parentComment: NostrEvent,
+    replyText: string,
+    mentions?: Set<string>
+  ) => {
     const existingRoot = event.tags.find(t => t[0] === 'e' && t[3] === 'root');
     const rootId = existingRoot ? existingRoot[1] : event.id;
+
+    const pTags: string[][] = [
+      ['p', parentComment.pubkey],
+      ['p', event.pubkey],
+    ];
+    if (mentions) {
+      for (const pk of mentions) {
+        if (pk !== parentComment.pubkey && pk !== event.pubkey) {
+          pTags.push(['p', pk]);
+        }
+      }
+    }
 
     await publishEvent({
       kind: 1,
@@ -629,8 +658,7 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
       tags: [
         ['e', rootId, '', 'root'],
         ['e', parentComment.id, '', 'reply'],
-        ['p', parentComment.pubkey],
-        ['p', event.pubkey],
+        ...pTags,
       ],
       created_at: Math.floor(Date.now() / 1000),
     });
@@ -647,6 +675,7 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
         onSuccess: () => {
           toast({ title: 'Comment posted!' });
           setText('');
+          setMentionedPubkeys(new Set());
         },
         onError: () => toast({ title: 'Failed to post comment', variant: 'destructive' }),
       }
@@ -654,7 +683,11 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
   };
 
   // Reply to a NIP-22 kind:1111 comment → another kind:1111
-  const handleReplyToNip22Comment = async (parentComment: NostrEvent, replyText: string) => {
+  const handleReplyToNip22Comment = async (
+    parentComment: NostrEvent,
+    replyText: string,
+    _mentions?: Set<string>
+  ) => {
     await new Promise<void>((resolve, reject) => {
       postComment(
         { content: replyText, root: event, reply: parentComment },
@@ -678,17 +711,19 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
       {/* Compose box */}
       {user ? (
         <form onSubmit={handleSubmit} className="space-y-2">
-          <Textarea
-            ref={textareaRef}
+          <MentionTextarea
+            textareaRef={textareaRef}
             value={text}
-            onChange={e => setText(e.target.value)}
-            placeholder={isKind1 ? 'Write a reply…' : 'Write a comment…'}
-            className="min-h-[80px] text-sm resize-none bg-background"
+            onChange={setText}
+            onMentionSelect={pk => setMentionedPubkeys(prev => new Set([...prev, pk]))}
+            placeholder={isKind1 ? 'Write a reply… (@ to mention)' : 'Write a comment… (@ to mention)'}
+            minHeight="80px"
+            className="bg-background"
             disabled={isSubmitting}
             onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSubmit(e); }}
           />
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-muted-foreground">Ctrl+Enter to send</span>
+            <span className="text-[10px] text-muted-foreground">Ctrl+Enter to send · @ to mention</span>
             <Button type="submit" size="sm" disabled={!text.trim() || isSubmitting} className="gap-1.5">
               {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
               {isSubmitting ? 'Posting…' : isKind1 ? 'Reply' : 'Comment'}
