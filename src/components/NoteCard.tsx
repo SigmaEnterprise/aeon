@@ -19,6 +19,7 @@ import { usePostComment } from '@/hooks/usePostComment';
 import { NoteContent } from '@/components/NoteContent';
 import { MentionTextarea } from '@/components/MentionTextarea';
 import { ZapButton } from '@/components/ZapButton';
+import { feedImage, thumbImage, fullImage } from '@/lib/imgproxy';
 import type { Event as NostrToolsEvent } from 'nostr-tools';
 import { genUserName } from '@/lib/genUserName';
 import { cn } from '@/lib/utils';
@@ -99,29 +100,22 @@ function extractMediaUrls(content: string) {
   return result;
 }
 
-// ─── Optimized image URL helper ────────────────────────────────────────────
-// Uses media.nostr.build's resize proxy for large images to reduce bandwidth
+// ─── Image URL helpers (imgproxy) ────────────────────────────────────────────
+// All image optimisation now routes through imgproxy for proper WebP conversion,
+// smart cropping, and bandwidth savings. See src/lib/imgproxy.ts for details.
 
-function optimizeImageUrl(url: string, width = 800): string {
-  // Skip already-optimized or data URLs
-  if (url.startsWith('data:') || url.includes('wsrv.nl') || url.includes('imageproxy')) {
-    return url;
-  }
-  // Use wsrv.nl as a free image CDN/proxy with resizing
-  // This helps mobile clients by not downloading full-size images
-  try {
-    const encoded = encodeURIComponent(url);
-    return `https://wsrv.nl/?url=${encoded}&w=${width}&output=webp&q=80`;
-  } catch {
-    return url;
-  }
+function optimizeImageUrl(url: string, width = 800, mode: 'feed' | 'thumb' | 'full' = 'feed'): string {
+  if (mode === 'thumb') return thumbImage(url, width);
+  if (mode === 'full') return fullImage(url, width);
+  return feedImage(url, width);
 }
 
 // ─── YouTube embed ────────────────────────────────────────────────────────────
 
 function YouTubeEmbed({ videoId }: { videoId: string }) {
   const [loaded, setLoaded] = useState(false);
-  const thumb = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+  const rawThumb = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+  const thumb = feedImage(rawThumb, 800);
 
   return (
     <div className="relative w-full overflow-hidden rounded-xl border bg-black" style={{ aspectRatio: '16/9' }}>
@@ -187,13 +181,14 @@ function ImageGallery({ urls }: { urls: string[] }) {
             onClick={() => setLightbox(url)}
           >
             <img
-              src={optimizeImageUrl(url, single ? 1200 : 600)}
+              src={single ? optimizeImageUrl(url, 1200, 'feed') : optimizeImageUrl(url, 600, 'thumb')}
               alt=""
               className={cn(
                 'w-full h-full object-cover group-hover:scale-105 transition-transform duration-300',
                 single && 'object-contain max-h-[500px]',
               )}
               loading="lazy"
+              decoding="async"
               onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
             />
             {urls.length > 4 && i === 3 && (
@@ -212,7 +207,7 @@ function ImageGallery({ urls }: { urls: string[] }) {
           onClick={() => setLightbox(null)}
         >
           <img
-            src={lightbox}
+            src={optimizeImageUrl(lightbox, 1600, 'full')}
             alt=""
             className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
             onClick={e => e.stopPropagation()}
@@ -899,11 +894,12 @@ function ArticleCard({ event, className }: NoteCardProps) {
       {image && (
         <div className="relative w-full overflow-hidden" style={{ maxHeight: '240px' }}>
           <img
-            src={optimizeImageUrl(image, 800)}
+            src={optimizeImageUrl(image, 800, 'feed')}
             alt={title}
             className="w-full h-full object-cover"
             style={{ maxHeight: '240px' }}
             loading="lazy"
+            decoding="async"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent" />
           <Badge className="absolute top-3 left-3 bg-primary/90 text-primary-foreground gap-1.5">

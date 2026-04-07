@@ -18,10 +18,12 @@ import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useAuthor } from '@/hooks/useAuthor';
 import { useFeed } from '@/hooks/useFeed';
 import { useFollowList } from '@/hooks/useFollowList';
+import { useInfiniteScroll } from '@/hooks/useInfiniteScroll';
 import { genUserName } from '@/lib/genUserName';
+import { feedImage, avatarImage } from '@/lib/imgproxy';
 import {
   Pencil, Globe, Zap, BadgeCheck, ExternalLink, Users, UserCheck,
-  Copy, ArrowRight, Wifi, WifiOff
+  Copy, ArrowRight, Wifi, WifiOff, Loader2, ArrowUp
 } from 'lucide-react';
 import { useToast } from '@/hooks/useToast';
 import type { NostrEvent, NostrMetadata } from '@nostrify/nostrify';
@@ -122,6 +124,14 @@ export function ProfilePage() {
   });
   const allPosts: NostrEvent[] = (postsData?.pages ?? []).flatMap(p => p.events);
 
+  // Infinite scroll for own posts
+  const { sentinelRef: postsSentinelRef } = useInfiniteScroll({
+    onLoadMore: fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    rootMargin: 400,
+  });
+
   // Followers: kind:3 events that contain our pubkey in p tags
   const { data: followerPubkeys = [], isLoading: followersLoading } = useQuery<string[]>({
     queryKey: ['followers', user?.pubkey ?? ''],
@@ -204,13 +214,13 @@ export function ProfilePage() {
         <Card className="overflow-hidden">
           <div className="relative h-36 bg-gradient-to-r from-primary/20 to-primary/40">
             {metadata?.banner && (
-              <img src={metadata.banner} alt="banner" className="w-full h-full object-cover" />
+              <img src={feedImage(metadata.banner, 1200)} alt="banner" className="w-full h-full object-cover" loading="lazy" decoding="async" />
             )}
           </div>
           <CardContent className="relative pt-0 pb-4">
             <div className="flex items-end justify-between -mt-10 mb-4">
               <Avatar className="h-20 w-20 ring-4 ring-background shadow-lg">
-                <AvatarImage src={metadata?.picture} alt={displayName} />
+                <AvatarImage src={metadata?.picture ? avatarImage(metadata.picture, 160) : undefined} alt={displayName} />
                 <AvatarFallback className="text-2xl font-bold">{displayName.slice(0, 2).toUpperCase()}</AvatarFallback>
               </Avatar>
               <Button variant="outline" size="sm" className="gap-2" onClick={() => setIsEditing(true)}>
@@ -304,10 +314,25 @@ export function ProfilePage() {
             ) : (
               allPosts.map(event => <NoteCard key={event.id} event={event} />)
             )}
-            {hasNextPage && (
-              <Button variant="outline" className="w-full" onClick={() => fetchNextPage()} disabled={isFetchingNextPage}>
-                {isFetchingNextPage ? 'Loading…' : 'Load more'}
-              </Button>
+
+            {/* Infinite scroll sentinel */}
+            <div ref={postsSentinelRef} className="h-1 w-full" aria-hidden="true" />
+
+            {isFetchingNextPage && (
+              <div className="flex items-center justify-center gap-2 py-4 text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span className="text-xs">Loading more notes…</span>
+              </div>
+            )}
+
+            {!hasNextPage && allPosts.length > 0 && (
+              <div className="text-center py-4 space-y-1">
+                <p className="text-xs text-muted-foreground">{allPosts.length} notes loaded</p>
+                <Button variant="ghost" size="sm" className="gap-1.5 text-xs text-muted-foreground"
+                  onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
+                  <ArrowUp className="h-3 w-3" />Back to top
+                </Button>
+              </div>
             )}
           </TabsContent>
 

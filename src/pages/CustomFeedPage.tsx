@@ -18,7 +18,7 @@
  * ranked *pubkeys*, not event IDs. We then fetch their latest Kind 1 notes
  * from the Nostr relay to show a social feed.
  */
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
 import { useSeoMeta } from '@unhead/react';
 import { useNavigate } from 'react-router-dom';
 import { nip19 } from 'nostr-tools';
@@ -41,6 +41,7 @@ import { useFollowList } from '@/hooks/useFollowList';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useAuthor } from '@/hooks/useAuthor';
+import { useInfiniteScroll } from '@/hooks/useInfiniteScroll';
 import {
   fetchVertexRecommendFollows,
   fetchVertexRankProfiles,
@@ -52,7 +53,7 @@ import {
 } from '@/hooks/useVertexDVM';
 import {
   Loader2, Star, Users, RefreshCw, AlertCircle,
-  TrendingUp, Lock, ChevronRight, Trophy, Pin,
+  TrendingUp, Lock, ChevronRight, Trophy, Pin, ArrowUp,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { NostrEvent, NostrMetadata } from '@nostrify/nostrify';
@@ -313,6 +314,13 @@ function ManualFollowFeed() {
 
   const allEvents: NostrEvent[] = (data?.pages ?? []).flatMap(p => p.events);
 
+  const { sentinelRef } = useInfiniteScroll({
+    onLoadMore: fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    rootMargin: 400,
+  });
+
   const handleSave = () => {
     const lines = inputValue.split('\n').map(l => l.trim()).filter(Boolean);
     const pubkeys: string[] = [];
@@ -398,10 +406,25 @@ function ManualFollowFeed() {
           ) : (
             allEvents.map(event => <NoteCard key={event.id} event={event} />)
           )}
-          {hasNextPage && (
-            <Button variant="outline" className="w-full" onClick={() => fetchNextPage()} disabled={isFetchingNextPage}>
-              {isFetchingNextPage ? <><Loader2 className="h-4 w-4 animate-spin mr-2" />Loading…</> : 'Load more'}
-            </Button>
+
+          {/* Infinite scroll sentinel */}
+          <div ref={sentinelRef} className="h-1 w-full" aria-hidden="true" />
+
+          {isFetchingNextPage && (
+            <div className="flex items-center justify-center gap-2 py-4 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span className="text-xs">Loading more notes…</span>
+            </div>
+          )}
+
+          {!hasNextPage && allEvents.length > 0 && (
+            <div className="text-center py-4 space-y-1">
+              <p className="text-xs text-muted-foreground">{allEvents.length} notes loaded</p>
+              <Button variant="ghost" size="sm" className="gap-1.5 text-xs text-muted-foreground"
+                onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>
+                <ArrowUp className="h-3 w-3" />Back to top
+              </Button>
+            </div>
           )}
         </div>
       )}

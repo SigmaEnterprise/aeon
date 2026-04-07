@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef } from 'react';
 import { useSeoMeta } from '@unhead/react';
 import { AppLayout } from '@/components/AppLayout';
 import { NoteCard } from '@/components/NoteCard';
@@ -16,10 +16,12 @@ import { useUploadFile } from '@/hooks/useUploadFile';
 import { useToast } from '@/hooks/useToast';
 import { useFeed } from '@/hooks/useFeed';
 import { useFollowList } from '@/hooks/useFollowList';
+import { useInfiniteScroll } from '@/hooks/useInfiniteScroll';
 import { cn } from '@/lib/utils';
 import {
   Loader2, RefreshCw, PauseCircle, PlayCircle, Send,
   Paperclip, Tag, Zap, Image as ImageIcon, Globe, Users, Search, AtSign,
+  ArrowUp,
 } from 'lucide-react';
 import type { NostrEvent } from '@nostrify/nostrify';
 import { SupportButton } from '@/components/SupportButton';
@@ -140,17 +142,13 @@ export function FeedPage() {
   const allEvents: NostrEvent[] = (data?.pages ?? []).flatMap(p => p.events);
 
   // ── Infinite scroll ────────────────────────────────────────────────────────
-  const observerRef = useRef<IntersectionObserver | null>(null);
-  const loadMoreRef = useCallback((node: HTMLDivElement | null) => {
-    if (observerRef.current) observerRef.current.disconnect();
-    if (!node) return;
-    observerRef.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting && hasNextPage && !isFetchingNextPage && !paused) {
-        fetchNextPage();
-      }
-    });
-    observerRef.current.observe(node);
-  }, [hasNextPage, isFetchingNextPage, paused, fetchNextPage]);
+  const { sentinelRef } = useInfiniteScroll({
+    onLoadMore: fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    paused,
+    rootMargin: 600, // start loading 600px before bottom
+  });
 
   // ── Publish ────────────────────────────────────────────────────────────────
   const handlePublish = async () => {
@@ -449,7 +447,7 @@ export function FeedPage() {
         <div className="space-y-4">
 
           {/* Don't render the feed if following tab has no pubkeys yet */}
-          {feedMode === 'following' && (!user || followedPubkeys.length === 0 && !followLoading) ? null : (
+          {feedMode === 'following' && (!user || (followedPubkeys.length === 0 && !followLoading)) ? null : (
             <>
               {isLoading ? (
                 <FeedSkeleton />
@@ -471,19 +469,44 @@ export function FeedPage() {
                 ))
               )}
 
-              {/* Infinite scroll sentinel */}
-              <div ref={loadMoreRef} className="h-4" />
+              {/* ── Infinite scroll sentinel ── */}
+              {/* Placed before the loading state so it renders as soon as events are shown */}
+              <div ref={sentinelRef} className="h-1 w-full" aria-hidden="true" />
 
+              {/* Loading more indicator */}
               {isFetchingNextPage && (
-                <div className="flex justify-center py-4">
-                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                <div className="flex items-center justify-center gap-2 py-6 text-muted-foreground">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  <span className="text-sm">Loading more notes…</span>
                 </div>
               )}
 
+              {/* Paused notice */}
+              {paused && hasNextPage && (
+                <div className="text-center py-3">
+                  <Badge variant="outline" className="gap-1.5 text-xs">
+                    <PauseCircle className="h-3 w-3" />
+                    Auto-load paused — click Resume to continue
+                  </Badge>
+                </div>
+              )}
+
+              {/* End of feed */}
               {!hasNextPage && allEvents.length > 0 && (
-                <p className="text-center text-sm text-muted-foreground py-4">
-                  You've reached the end
-                </p>
+                <div className="text-center py-6 space-y-2">
+                  <p className="text-sm text-muted-foreground">
+                    You've reached the end · {allEvents.length} notes loaded
+                  </p>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+                  >
+                    <ArrowUp className="h-3.5 w-3.5" />
+                    Back to top
+                  </Button>
+                </div>
               )}
             </>
           )}
