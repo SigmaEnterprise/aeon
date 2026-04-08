@@ -34,9 +34,12 @@ export function NoteContent({ event, className }: NoteContentProps) {
   const content = useMemo(() => {
     const text = event.content;
 
-    // Match: URLs | nostr: URIs (with full bech32 charset) | #hashtags
+    // Match: URLs | nostr: URIs | #hashtags
+    // Bech32 charset (NIP-19): qpzry9x8gf2tvdw0s3jn54khce6mua7l
+    // Which is: digits 0,2-9 and letters a-z except b, i, o, 1
+    // Using character class: [ac-hj-np-z02-9]
     const regex =
-      /(https?:\/\/[^\s<>"')\]]+)|(nostr:(?:npub1|note1|nprofile1|nevent1|naddr1)[023456789acdefghjklmnpqrstuvwxyz]+)|(#\w+)/g;
+      /(https?:\/\/[^\s<>"')\]]+)|(nostr:(?:npub1|note1|nprofile1|nevent1|naddr1)[ac-hj-np-z02-9]+)|(#\w+)/g;
 
     const parts: React.ReactNode[] = [];
     let lastIndex = 0;

@@ -82,7 +82,9 @@ export function MentionTextarea({
   } | null>(null);
 
   const [activeIndex, setActiveIndex] = useState(0);
-  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  // Use viewport-relative (fixed) coordinates so the dropdown is never clipped
+  // by an ancestor's overflow:hidden (e.g. NoteCard's Card component)
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number; width: number }>({ top: 0, left: 0, width: 288 });
 
   const { data: results = [], isFetching } = useMentionSearch(
     mentionState?.query ?? '',
@@ -94,43 +96,35 @@ export function MentionTextarea({
     setActiveIndex(0);
   }, [results.length]);
 
-  // ── Position the dropdown relative to the @ character ─────────────────────
+  // ── Position the dropdown using fixed (viewport) coordinates ─────────────
+  // Fixed positioning avoids clipping from overflow:hidden ancestors like Card
   const updateDropdownPos = useCallback(() => {
     const ta = ref.current;
     if (!ta || !mentionState) return;
 
-    // Use a hidden mirror div technique to measure caret position
-    const mirror = document.createElement('div');
-    const style = window.getComputedStyle(ta);
-
-    mirror.style.cssText = `
-      position: absolute; visibility: hidden; white-space: pre-wrap;
-      word-wrap: break-word; overflow-wrap: break-word;
-      font: ${style.font}; padding: ${style.padding};
-      border: ${style.border}; width: ${ta.offsetWidth}px;
-      line-height: ${style.lineHeight}; letter-spacing: ${style.letterSpacing};
-      box-sizing: border-box;
-    `;
-
-    const textBefore = ta.value.slice(0, mentionState.start);
-    mirror.textContent = textBefore;
-    const span = document.createElement('span');
-    span.textContent = '@';
-    mirror.appendChild(span);
-    document.body.appendChild(mirror);
-
-    const spanRect = span.getBoundingClientRect();
     const taRect = ta.getBoundingClientRect();
-    document.body.removeChild(mirror);
+    const dropdownWidth = Math.min(320, taRect.width);
 
-    // Position below the @ sign, clamped to viewport
-    const rawTop = spanRect.top - taRect.top + ta.scrollTop + 20;
-    const rawLeft = Math.min(
-      spanRect.left - taRect.left,
-      ta.offsetWidth - 280
-    );
+    // Position the dropdown below the textarea, aligned to its left edge
+    // then clamp so it doesn't overflow viewport right edge
+    let left = taRect.left;
+    if (left + dropdownWidth > window.innerWidth - 8) {
+      left = window.innerWidth - dropdownWidth - 8;
+    }
+    left = Math.max(8, left);
 
-    setDropdownPos({ top: Math.max(rawTop, 0), left: Math.max(rawLeft, 0) });
+    // Position below textarea — if near bottom of viewport, flip above
+    const spaceBelow = window.innerHeight - taRect.bottom;
+    const dropdownHeight = 280; // approximate max height
+    let top: number;
+    if (spaceBelow < dropdownHeight && taRect.top > dropdownHeight) {
+      // Flip above
+      top = taRect.top - dropdownHeight;
+    } else {
+      top = taRect.bottom + 4;
+    }
+
+    setDropdownPos({ top, left, width: dropdownWidth });
   }, [ref, mentionState]);
 
   useEffect(() => {
@@ -244,11 +238,11 @@ export function MentionTextarea({
         )}
       />
 
-      {/* ── Mention dropdown ── */}
+      {/* ── Mention dropdown — rendered fixed to escape overflow:hidden parents ── */}
       {showDropdown && (
         <div
-          className="absolute z-50 w-72 rounded-lg border bg-popover shadow-xl overflow-hidden animate-in fade-in-0 zoom-in-95"
-          style={{ top: dropdownPos.top, left: dropdownPos.left }}
+          className="fixed z-[200] rounded-lg border bg-popover shadow-xl overflow-hidden animate-in fade-in-0 zoom-in-95"
+          style={{ top: dropdownPos.top, left: dropdownPos.left, width: dropdownPos.width }}
         >
           {/* Header */}
           <div className="flex items-center justify-between px-3 py-1.5 border-b bg-muted/40">
