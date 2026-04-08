@@ -415,6 +415,53 @@ function parseRankArray(content: string): VertexRankEntry[] {
   }
 }
 
+// ─── High-Signal Article Authors (kind:5313 → ranked pubkeys for articles) ───
+//
+// Fetches the top globally-ranked Nostr pubkeys, then the caller queries
+// kind:30023 articles authored by those pubkeys. This acts as a PageRank
+// filter that surfaces articles from high-reputation authors only.
+//
+// Two modes:
+//   'global'       – kind:5313 sort:globalPagerank  (no login needed for ranking,
+//                    but we still need a signer to sign the DVM request)
+//   'personalized' – kind:5313 sort:personalizedPagerank source:<user>
+
+export interface HighSignalArticleAuthorsParams {
+  mode: 'global' | 'personalized';
+  source?: string; // user pubkey for personalized mode
+  limit?: number;  // how many top authors to pull (default 40)
+}
+
+export async function fetchHighSignalArticleAuthors(
+  signer: MinimalSigner,
+  params: HighSignalArticleAuthorsParams
+): Promise<VertexRankEntry[]> {
+  const { mode, source, limit = 40 } = params;
+  const sort = mode === 'personalized' ? 'personalizedPagerank' : 'globalPagerank';
+  const cacheKey = `vertex:article-authors:${sort}:${limit}:${source ?? 'anon'}`;
+
+  const cached = readCache<VertexRankEntry[]>(cacheKey);
+  if (cached) return cached;
+
+  const tags: string[][] = [
+    ['param', 'sort', sort],
+    ['param', 'limit', String(limit)],
+  ];
+  if (source && mode === 'personalized') tags.push(['param', 'source', source]);
+
+  const { content, error } = await dvmRequest(
+    signer,
+    { kind: 5313, content: '', tags, created_at: Math.floor(Date.now() / 1000) },
+    6313
+  );
+
+  if (error) throw new Error(error.message);
+
+  const results = parseRankArray(content);
+  writeCache(cacheKey, results);
+  return results;
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────
 
 export function useVertexSigner() {
