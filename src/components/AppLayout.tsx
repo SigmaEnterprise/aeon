@@ -40,6 +40,7 @@ const NAV_ITEMS = [
   { path: '/relays',        label: 'Relays',         icon: '🌐' },
   { path: '/media-hosts',   label: 'Media Hosts',    icon: '📦' },
   { path: '/relay-explorer', label: 'Relay Explorer', icon: '🔭' },
+  { path: '/features',       label: 'Features',        icon: '✨' },
 ];
 
 interface AppLayoutProps {

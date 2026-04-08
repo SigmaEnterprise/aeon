@@ -15,6 +15,7 @@ import { RelaysPage } from "./pages/RelaysPage";
 import { MediaHostsPage } from "./pages/MediaHostsPage";
 import { RelayExplorerPage } from "./pages/RelayExplorerPage";
 import { NIP19Page } from "./pages/NIP19Page";
+import { FeaturesPage } from "./pages/FeaturesPage";
 import NotFound from "./pages/NotFound";
 
 export function AppRouter() {
@@ -38,6 +39,8 @@ export function AppRouter() {
         <Route path="/media-hosts" element={<MediaHostsPage />} />
         {/* NIP-51 Relay Explorer — browse events from any relay */}
         <Route path="/relay-explorer" element={<RelayExplorerPage />} />
+        {/* Features reference page */}
+        <Route path="/features" element={<FeaturesPage />} />
         {/* NIP-19 route for npub1, note1, naddr1, nevent1, nprofile1 */}
         <Route path="/:nip19" element={<NIP19Page />} />
         {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
