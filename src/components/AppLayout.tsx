@@ -31,6 +31,7 @@ const THEMES = [
 
 const NAV_ITEMS = [
   { path: '/feed',           label: 'Feed',          icon: '📰' },
+  { path: '/articles',       label: 'Articles',       icon: '🗞️' },
   { path: '/custom-feed',   label: 'Custom Feeds',   icon: '⭐' },
   { path: '/profile',       label: 'Profile',        icon: '👤' },
   { path: '/directory',     label: 'Directory',      icon: '📇' },
@@ -117,7 +118,7 @@ export function AppLayout({ children }: AppLayoutProps) {
                 className={cn(
                   "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150",
                   "hover:bg-accent hover:text-accent-foreground",
-                  location.pathname === item.path
+                  (location.pathname === item.path || (item.path !== '/' && location.pathname.startsWith(item.path + '/')))
                     ? "bg-primary text-primary-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 )}

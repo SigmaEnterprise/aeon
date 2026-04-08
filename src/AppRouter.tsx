@@ -3,6 +3,9 @@ import { ScrollToTop } from "./components/ScrollToTop";
 
 import Index from "./pages/Index";
 import { FeedPage } from "./pages/FeedPage";
+import { ArticlesPage } from "./pages/ArticlesPage";
+import { ArticleEditorPage } from "./pages/ArticleEditorPage";
+import { ArticleViewPage } from "./pages/ArticleViewPage";
 import { CustomFeedPage } from "./pages/CustomFeedPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { DirectoryPage } from "./pages/DirectoryPage";
@@ -21,6 +24,11 @@ export function AppRouter() {
       <Routes>
         <Route path="/" element={<Index />} />
         <Route path="/feed" element={<FeedPage />} />
+        {/* NIP-23 Articles suite */}
+        <Route path="/articles" element={<ArticlesPage />} />
+        <Route path="/articles/new" element={<ArticleEditorPage />} />
+        <Route path="/articles/edit/:naddr" element={<ArticleEditorPage />} />
+        <Route path="/articles/:naddr" element={<ArticleViewPage />} />
         <Route path="/custom-feed" element={<CustomFeedPage />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/directory" element={<DirectoryPage />} />
