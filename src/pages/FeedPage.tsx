@@ -114,17 +114,17 @@ export function FeedPage() {
   const { data: followedPubkeys = [], isLoading: followLoading } = useFollowList();
 
   // ── Feed queries ───────────────────────────────────────────────────────────
-  // Global feed – no author filter, kind:1 notes + kind:30023 long-form articles
-  const globalFeed = useFeed({ kinds: [1, 30023], limit: 30 });
+  // Global feed – no author filter, kind:1 notes + kind:6/16 reposts + kind:30023 articles
+  const globalFeed = useFeed({ kinds: [1, 6, 16, 30023], limit: 30 });
 
   // Following feed – filter by NIP-02 contact list
   const followingFeed = useFeed({
-    kinds: [1, 30023],
+    kinds: [1, 6, 16, 30023],
     limit: 30,
     authors: followedPubkeys.length > 0 ? followedPubkeys : undefined,
   });
 
-  // Keyword / hashtag search feed
+  // Keyword / hashtag search feed (reposts don't have content to search, keep kind:1 only)
   const searchFeed = useFeed({
     kinds: [1, 30023],
     limit: 30,

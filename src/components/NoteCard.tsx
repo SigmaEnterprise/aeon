@@ -19,15 +19,17 @@ import { usePostComment } from '@/hooks/usePostComment';
 import { NoteContent } from '@/components/NoteContent';
 import { MentionTextarea } from '@/components/MentionTextarea';
 import { ZapButton } from '@/components/ZapButton';
+import { RepostButton } from '@/components/RepostButton';
 import { feedImage, thumbImage, fullImage } from '@/lib/imgproxy';
 import type { Event as NostrToolsEvent } from 'nostr-tools';
 import { genUserName } from '@/lib/genUserName';
 import { cn } from '@/lib/utils';
+import { useNostr } from '@nostrify/react';
+import { useQuery } from '@tanstack/react-query';
 import {
   Share2,
   Copy,
   MessageSquare,
-  Repeat2,
   Heart,
   ExternalLink,
   Download,
@@ -44,6 +46,7 @@ import {
   Send,
   Loader2,
   CornerDownRight,
+  Repeat2,
 } from 'lucide-react';
 
 interface NoteCardProps {
@@ -773,14 +776,12 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
 function EngagementBar({
   eventId,
   event,
-  onRepost,
   onLike,
   showComments,
   onToggleComments,
 }: {
   eventId: string;
   event: NostrEvent;
-  onRepost: () => void;
   onLike: () => void;
   showComments: boolean;
   onToggleComments: () => void;
@@ -817,15 +818,8 @@ function EngagementBar({
         </TooltipContent>
       </Tooltip>
 
-      {/* Repost */}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button variant="ghost" size="sm" className="h-8 px-2 text-muted-foreground hover:text-green-500 gap-1.5" onClick={onRepost}>
-            <Repeat2 className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Repost</TooltipContent>
-      </Tooltip>
+      {/* Repost / Quote Repost (NIP-18) */}
+      <RepostButton event={event} />
 
       {/* Like — shows count */}
       <Tooltip>
@@ -1003,9 +997,117 @@ function ArticleCard({ event, className }: NoteCardProps) {
   );
 }
 
+// ─── Repost Card (kind:6 / kind:16) ──────────────────────────────────────────
+//
+// Shows a slim "reposted by" banner above the original note content.
+// The inner note is rendered recursively via NoteCard.
+
+function useRepostedEvent(repostEvent: NostrEvent) {
+  const { nostr } = useNostr();
+
+  // The original event may be embedded in the content field
+  const embedded: NostrEvent | null = (() => {
+    if (!repostEvent.content) return null;
+    try {
+      const parsed = JSON.parse(repostEvent.content) as NostrEvent;
+      if (parsed && parsed.id && parsed.kind !== undefined) return parsed;
+    } catch { /* not embedded */ }
+    return null;
+  })();
+
+  // Get the e-tag reference to the original event
+  const eTag = repostEvent.tags.find(t => t[0] === 'e');
+  const referencedId = eTag?.[1];
+
+  return useQuery<NostrEvent | null>({
+    queryKey: ['reposted-event', referencedId ?? repostEvent.id],
+    queryFn: async () => {
+      if (embedded) return embedded;
+      if (!referencedId) return null;
+      const [event] = await nostr.query(
+        [{ ids: [referencedId], limit: 1 }],
+        { signal: AbortSignal.timeout(5000) }
+      );
+      return event ?? null;
+    },
+    initialData: embedded ?? undefined,
+    staleTime: 5 * 60 * 1000,
+    enabled: !!referencedId || !!embedded,
+  });
+}
+
+function RepostCard({ event, className }: NoteCardProps) {
+  const navigate = useNavigate();
+  const reposterAuthor = useAuthor(event.pubkey);
+  const reposterMeta = reposterAuthor.data?.metadata;
+  const reposterName = reposterMeta?.name ?? genUserName(event.pubkey);
+  const reposterNpub = nip19.npubEncode(event.pubkey);
+  const timeAgo = formatDistanceToNow(new Date(event.created_at * 1000), { addSuffix: true });
+
+  const { data: originalEvent, isLoading } = useRepostedEvent(event);
+
+  // kind number of reposted event for generic repost display
+  const repostedKindTag = event.tags.find(t => t[0] === 'k')?.[1];
+  const repostedKindLabel = repostedKindTag ? `kind:${repostedKindTag}` : null;
+
+  return (
+    <div className={cn('space-y-0', className)}>
+      {/* Repost banner */}
+      <div
+        className="flex items-center gap-1.5 px-4 pt-2 pb-1 text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors"
+        onClick={() => navigate(`/${reposterNpub}`)}
+      >
+        <Repeat2 className="h-3.5 w-3.5 text-green-500 shrink-0" />
+        <Avatar className="h-4 w-4 shrink-0">
+          <AvatarImage src={reposterMeta?.picture} alt={reposterName} />
+          <AvatarFallback className="text-[7px]">{reposterName.slice(0, 1).toUpperCase()}</AvatarFallback>
+        </Avatar>
+        <span className="font-medium hover:underline">{reposterName}</span>
+        <span>reposted</span>
+        {repostedKindLabel && (
+          <Badge variant="outline" className="text-[9px] px-1 py-0 ml-0.5">{repostedKindLabel}</Badge>
+        )}
+        <span className="ml-auto shrink-0">{timeAgo}</span>
+      </div>
+
+      {/* Original note */}
+      {isLoading ? (
+        <Card className={cn('animate-fade-in overflow-hidden', className)}>
+          <CardContent className="p-4 space-y-3">
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-10 w-10 rounded-full" />
+              <div className="space-y-1 flex-1">
+                <Skeleton className="h-4 w-32" />
+                <Skeleton className="h-3 w-20" />
+              </div>
+            </div>
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-4/5" />
+          </CardContent>
+        </Card>
+      ) : originalEvent ? (
+        <NoteCard event={originalEvent} className={className} />
+      ) : (
+        <Card className={cn('overflow-hidden', className)}>
+          <CardContent className="p-4">
+            <p className="text-sm text-muted-foreground italic">
+              Original note not found or deleted.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 // ─── Main NoteCard ────────────────────────────────────────────────────────────
 
 export function NoteCard({ event, className, depth = 0 }: NoteCardProps) {
+  // Handle kind:6 (repost of kind:1) and kind:16 (generic repost)
+  if (event.kind === 6 || event.kind === 16) {
+    return <RepostCard event={event} className={className} />;
+  }
+
   if (event.kind === 30023) {
     return <ArticleCard event={event} className={className} />;
   }
@@ -1031,25 +1133,6 @@ export function NoteCard({ event, className, depth = 0 }: NoteCardProps) {
 
   const handleShare = () => {
     window.open(`https://njump.me/${noteId}`, '_blank', 'noopener,noreferrer');
-  };
-
-  const handleRepost = () => {
-    if (!user) {
-      toast({ title: 'Login required', description: 'Please log in to repost.', variant: 'destructive' });
-      return;
-    }
-    publishEvent(
-      {
-        kind: 6,
-        content: JSON.stringify(event),
-        tags: [['e', event.id, '', 'mention'], ['p', event.pubkey]],
-        created_at: Math.floor(Date.now() / 1000),
-      },
-      {
-        onSuccess: () => toast({ title: 'Reposted!' }),
-        onError: () => toast({ title: 'Failed to repost', variant: 'destructive' }),
-      }
-    );
   };
 
   const handleLike = () => {
@@ -1163,7 +1246,6 @@ export function NoteCard({ event, className, depth = 0 }: NoteCardProps) {
           <EngagementBar
             eventId={event.id}
             event={event}
-            onRepost={handleRepost}
             onLike={handleLike}
             showComments={showComments}
             onToggleComments={() => setShowComments(v => !v)}

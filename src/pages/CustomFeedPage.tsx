@@ -310,7 +310,7 @@ function ManualFollowFeed() {
   const [showEditor, setShowEditor] = useState(savedPubkeys.length === 0);
 
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isLoading, refetch, isFetching } =
-    useFeed({ authors: activePubkeys.length > 0 ? activePubkeys : undefined, kinds: [1, 30023], limit: 30 });
+    useFeed({ authors: activePubkeys.length > 0 ? activePubkeys : undefined, kinds: [1, 6, 16, 30023], limit: 30 });
 
   const allEvents: NostrEvent[] = (data?.pages ?? []).flatMap(p => p.events);
 

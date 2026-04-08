@@ -3,6 +3,8 @@
  *
  * Fetches in a single combined query:
  *  - Kind 1  replies (events where e tag points to target with reply/root marker)
+ *  - Kind 6  reposts (NIP-18)
+ *  - Kind 16 generic reposts (NIP-18)
  *  - Kind 7  reactions (likes, +1, emoji)
  *  - Kind 9735 zap receipts
  *
@@ -14,10 +16,12 @@ import type { NostrEvent } from '@nostrify/nostrify';
 
 export interface EngagementData {
   replyCount: number;
+  repostCount: number;
   reactionCount: number;
   zapCount: number;
   zapTotal: number; // total sats
   replies: NostrEvent[];
+  reposts: NostrEvent[];
   reactions: NostrEvent[];
   zaps: NostrEvent[];
 }
@@ -32,15 +36,16 @@ export function useEventEngagement(eventId: string, enabled = true) {
       const events = await nostr.query(
         [
           {
-            kinds: [1, 7, 9735],
+            kinds: [1, 6, 7, 16, 9735],
             '#e': [eventId],
-            limit: 200,
+            limit: 300,
           },
         ],
         { signal: AbortSignal.timeout(10000) }
       );
 
       const replies = events.filter(e => e.kind === 1);
+      const reposts = events.filter(e => e.kind === 6 || e.kind === 16);
       const reactions = events.filter(e => e.kind === 7);
       const zaps = events.filter(e => e.kind === 9735);
 
@@ -67,10 +72,12 @@ export function useEventEngagement(eventId: string, enabled = true) {
 
       return {
         replyCount: replies.length,
+        repostCount: reposts.length,
         reactionCount: reactions.length,
         zapCount: zaps.length,
         zapTotal,
         replies: replies.sort((a, b) => a.created_at - b.created_at),
+        reposts,
         reactions,
         zaps,
       };
