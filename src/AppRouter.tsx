@@ -10,6 +10,7 @@ import { CustomFeedPage } from "./pages/CustomFeedPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { DirectoryPage } from "./pages/DirectoryPage";
 import { ShieldedPage } from "./pages/ShieldedPage"; // NIP-17 Private DMs
+import { MarmotPage } from "./pages/MarmotPage"; // Marmot MLS Groups
 import { KeysPage } from "./pages/KeysPage";
 import { RelaysPage } from "./pages/RelaysPage";
 import { MediaHostsPage } from "./pages/MediaHostsPage";
@@ -34,6 +35,7 @@ export function AppRouter() {
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/directory" element={<DirectoryPage />} />
         <Route path="/shielded" element={<ShieldedPage />} />
+        <Route path="/marmot" element={<MarmotPage />} />
         <Route path="/keys" element={<KeysPage />} />
         <Route path="/relays" element={<RelaysPage />} />
         <Route path="/media-hosts" element={<MediaHostsPage />} />

@@ -152,6 +152,8 @@ async function unwrapViaKey(
 interface DecryptedMsg {
   id: string; content: string; kind: number; created_at: number;
   senderPubkey: string; direction: 'sent' | 'received'; subject?: string;
+  /** The conversation partner pubkey (for sent messages: recipient, for received: sender) */
+  conversationPartner: string;
 }
 interface ConversationContact { pubkey: string; lastSeen: number; }
 
@@ -279,8 +281,10 @@ export function ShieldedPage() {
     }
 
     setIsDecrypting(true);
-    const decrypted: DecryptedMsg[] = [];
-    const newContacts = new Map<string, number>();
+
+    // Map: conversationPartnerPubkey → DecryptedMsg[]
+    // Correctly isolates sent/received messages per contact.
+    const byPartner = new Map<string, DecryptedMsg[]>();
 
     for (const wrap of wraps) {
       let rumor: (Omit<NostrEvent, 'sig'> & { sig?: string }) | null = null;
@@ -290,24 +294,65 @@ export function ShieldedPage() {
         rumor = await unwrapViaKey(wrap, privBytes);
       }
       if (!rumor || (rumor.kind !== 14 && rumor.kind !== 15)) continue;
+
+      const isSent = rumor.pubkey === user.pubkey;
       const subject = rumor.tags?.find(t => t[0] === 'subject')?.[1];
-      decrypted.push({
-        id: rumor.id ?? wrap.id, content: rumor.content, kind: rumor.kind,
-        created_at: rumor.created_at, senderPubkey: rumor.pubkey,
-        direction: rumor.pubkey === user.pubkey ? 'sent' : 'received', subject,
-      });
-      newContacts.set(rumor.pubkey, Math.max(newContacts.get(rumor.pubkey) ?? 0, rumor.created_at));
+
+      // Determine the conversation partner:
+      //   - If WE sent it: partner is the first 'p' tag recipient
+      //   - If THEY sent it: partner is the sender (rumor.pubkey)
+      let partner: string;
+      if (isSent) {
+        const pTag = rumor.tags?.find(t => t[0] === 'p')?.[1];
+        if (!pTag || pTag === user.pubkey) continue; // Skip self-messages without valid recipient
+        partner = pTag;
+      } else {
+        partner = rumor.pubkey;
+      }
+
+      const msg: DecryptedMsg = {
+        id: rumor.id ?? wrap.id,
+        content: rumor.content,
+        kind: rumor.kind,
+        created_at: rumor.created_at,
+        senderPubkey: rumor.pubkey,
+        direction: isSent ? 'sent' : 'received',
+        subject,
+        conversationPartner: partner,
+      };
+
+      if (!byPartner.has(partner)) byPartner.set(partner, []);
+      byPartner.get(partner)!.push(msg);
     }
 
-    setMessages(decrypted.sort((a, b) => a.created_at - b.created_at));
-    const contactArr = Array.from(newContacts.entries()).map(([pubkey, lastSeen]) => ({ pubkey, lastSeen }));
-    setContacts(contactArr.sort((a, b) => b.lastSeen - a.lastSeen));
+    // Flatten all messages (sorted by time) for the messages state
+    const allMessages: DecryptedMsg[] = [];
+    const newContacts: ConversationContact[] = [];
+
+    byPartner.forEach((msgs, partner) => {
+      // Sort each conversation's messages chronologically
+      msgs.sort((a, b) => a.created_at - b.created_at);
+      allMessages.push(...msgs);
+      const lastSeen = msgs[msgs.length - 1].created_at;
+      newContacts.push({ pubkey: partner, lastSeen });
+    });
+
+    // Global sort for the messages array (used by threadMessages filter)
+    allMessages.sort((a, b) => a.created_at - b.created_at);
+
+    setMessages(allMessages);
+    setContacts(newContacts.sort((a, b) => b.lastSeen - a.lastSeen));
     setIsDecrypting(false);
-    toast({ title: `Decrypted ${decrypted.length} messages` });
+    toast({ title: `Decrypted ${allMessages.length} messages across ${newContacts.length} conversations` });
   };
 
+  // Show only messages that belong to the active conversation.
+  // Every message now carries its conversationPartner (the other party),
+  // so we can filter precisely — no cross-conversation leakage.
   const threadMessages = activeRecipient
-    ? messages.filter(m => m.senderPubkey === activeRecipient || m.direction === 'sent')
+    ? messages
+        .filter(m => m.conversationPartner === activeRecipient)
+        .sort((a, b) => a.created_at - b.created_at)
     : [];
 
   const handleSend = async () => {
@@ -357,11 +402,19 @@ export function ShieldedPage() {
         nostr.event(wrapForSelf, { signal: AbortSignal.timeout(8000) }),
       ]);
 
+      // Add sent message optimistically with conversationPartner set to the recipient
       setMessages(prev => [...prev, {
         id: (rumor as NostrEvent).id, content: rumor.content, kind: rumor.kind,
         created_at: rumor.created_at, senderPubkey, direction: 'sent',
         subject: subjectInput.trim() || undefined,
+        conversationPartner: activeRecipient,
       }].sort((a, b) => a.created_at - b.created_at));
+      // Ensure contact exists for the recipient
+      setContacts(prev => {
+        const exists = prev.some(c => c.pubkey === activeRecipient);
+        if (exists) return prev.map(c => c.pubkey === activeRecipient ? { ...c, lastSeen: rumor.created_at } : c);
+        return [{ pubkey: activeRecipient, lastSeen: rumor.created_at }, ...prev];
+      });
 
       setMessageInput('');
       setSubjectInput('');
@@ -425,7 +478,7 @@ export function ShieldedPage() {
           </AlertDescription>
         </Alert>
 
-        <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] gap-4 h-[calc(100vh-24rem)]">
+        <div className="grid grid-cols-1 md:grid-cols-[300px_1fr] gap-4 h-[calc(100vh-18rem)]">
 
           {/* Sidebar */}
           <Card className="flex flex-col overflow-hidden">
@@ -540,15 +593,15 @@ export function ShieldedPage() {
                   <div ref={endRef} />
                 </div>
                 <Separator />
-                <div className="p-3 space-y-2">
+                <div className="p-4 space-y-2">
                   <Input placeholder="Subject (optional)…" value={subjectInput}
-                    onChange={e => setSubjectInput(e.target.value)} className="h-7 text-xs" />
+                    onChange={e => setSubjectInput(e.target.value)} className="h-8 text-sm" />
                   <div className="flex gap-2">
                     <Textarea placeholder="Write a private message… (Ctrl+Enter to send)"
                       value={messageInput} onChange={e => setMessageInput(e.target.value)}
-                      className="min-h-[60px] resize-none text-sm flex-1"
+                      className="min-h-[100px] resize-none text-sm flex-1"
                       onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSend(); }} />
-                    <Button className="h-auto self-stretch px-3" onClick={handleSend}
+                    <Button className="h-auto self-stretch px-4" onClick={handleSend}
                       disabled={isSending || !messageInput.trim()}>
                       {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                     </Button>

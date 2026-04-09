@@ -37,6 +37,7 @@ const NAV_ITEMS = [
   { path: '/profile',       label: 'Profile',        icon: '👤' },
   { path: '/directory',     label: 'Directory',      icon: '📇' },
   { path: '/shielded',      label: 'Private DMs',    icon: '🔒' },
+  { path: '/marmot',        label: 'Marmot Groups',  icon: '🦫' },
   { path: '/keys',          label: 'Keys',           icon: '🔑' },
   { path: '/relays',        label: 'Relays',         icon: '🌐' },
   { path: '/media-hosts',   label: 'Media Hosts',    icon: '📦' },
