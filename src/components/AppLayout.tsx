@@ -9,7 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useTheme } from '@/hooks/useTheme';
-import { Menu, X, Zap, Wallet } from 'lucide-react';
+import { useLoggedInAccounts } from '@/hooks/useLoggedInAccounts';
+import { Menu, X, Zap, Wallet, LogIn } from 'lucide-react';
 
 const THEMES = [
   { value: 'light', label: 'Default Light' },
@@ -51,38 +52,44 @@ export function AppLayout({ children }: AppLayoutProps) {
   const location = useLocation();
   const { theme, setTheme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { currentUser } = useLoggedInAccounts();
 
   return (
     <div className="min-h-screen bg-background text-foreground">
 
       {/* ── Top Header ──────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-50 border-b bg-card/80 backdrop-blur-md shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto px-3 sm:px-4 h-14 flex items-center gap-2">
 
-          {/* Left: hamburger + logo */}
-          <div className="flex items-center gap-3">
+          {/* Left: hamburger (mobile) + logo */}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Hamburger — mobile only */}
             <Button
               variant="ghost"
               size="icon"
-              className="md:hidden"
+              className="h-9 w-9 md:hidden shrink-0"
               onClick={() => setMobileOpen(!mobileOpen)}
+              aria-label="Toggle menu"
             >
               {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
             </Button>
 
-            <Link to="/" className="flex items-center gap-2">
-              <AeonLogo size={32} />
+            <Link to="/" className="flex items-center gap-2 shrink-0">
+              <AeonLogo size={30} />
               <span className="hidden sm:block font-bold text-lg tracking-tight bg-gradient-to-r from-violet-500 via-indigo-500 to-sky-500 bg-clip-text text-transparent">
                 Aeon
               </span>
             </Link>
           </div>
 
-          {/* Right: theme picker + notifications + login */}
-          <div className="flex items-center gap-2 ml-auto min-w-0">
-            {/* Theme picker — hidden on mobile to prevent header overflow */}
+          {/* Spacer */}
+          <div className="flex-1" />
+
+          {/* Right: theme picker (sm+) + notifications + login/avatar */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* Theme picker — hidden on mobile */}
             <Select value={theme} onValueChange={setTheme}>
-              <SelectTrigger className="hidden sm:flex w-[140px] h-8 text-xs">
+              <SelectTrigger className="hidden sm:flex w-[130px] h-8 text-xs">
                 <SelectValue placeholder="Theme" />
               </SelectTrigger>
               <SelectContent>
@@ -94,10 +101,34 @@ export function AppLayout({ children }: AppLayoutProps) {
               </SelectContent>
             </Select>
 
-            {/* 🔔 Notification bell — only shows when logged in */}
+            {/* Notifications bell (only when logged in — handled inside component) */}
             <NotificationsPanel />
 
-            <LoginArea className="max-w-xs" />
+            {/* Login area:
+                - On mobile (< sm): show compact icon-only login button when logged out,
+                  or the full AccountSwitcher (which already hides the name on mobile)
+                - On sm+: show full LoginArea with both buttons */}
+            <div className="hidden sm:block">
+              <LoginArea className="max-w-xs" />
+            </div>
+
+            {/* Mobile login: icon-only when logged out, avatar switcher when logged in */}
+            {!currentUser && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9 sm:hidden shrink-0"
+                onClick={() => setMobileOpen(true)}
+                aria-label="Log in"
+              >
+                <LogIn className="h-4 w-4" />
+              </Button>
+            )}
+            {currentUser && (
+              <div className="sm:hidden">
+                <LoginArea />
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -106,9 +137,11 @@ export function AppLayout({ children }: AppLayoutProps) {
 
         {/* ── Sidebar ────────────────────────────────────────────────────── */}
         <aside className={cn(
-          "w-64 shrink-0 border-r min-h-[calc(100vh-3.5rem)] bg-card/50 sticky top-14 self-start transition-all duration-200",
+          "w-64 shrink-0 border-r min-h-[calc(100vh-3.5rem)] bg-card/50 sticky top-14 self-start",
+          // Desktop: always visible
           "hidden md:block",
-          mobileOpen && "fixed inset-0 top-14 z-40 block w-64 bg-card border-r"
+          // Mobile: show as full-height overlay drawer when open
+          mobileOpen && "fixed inset-0 top-14 z-40 flex flex-col w-72 bg-card border-r overflow-y-auto"
         )}>
           <nav className="p-3 space-y-0.5">
 
@@ -130,8 +163,18 @@ export function AppLayout({ children }: AppLayoutProps) {
               </Link>
             ))}
 
-            {/* Mobile-only theme picker */}
-            <div className="pt-4 mt-3 border-t sm:hidden">
+            {/* Mobile login section — shown in sidebar when drawer is open */}
+            <div className="pt-4 mt-3 border-t md:hidden">
+              <p className="px-3 pb-2 text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">
+                Account
+              </p>
+              <div className="px-2">
+                <LoginArea className="w-full" />
+              </div>
+            </div>
+
+            {/* Theme picker — in sidebar, hidden on desktop (already in header) */}
+            <div className="pt-4 mt-3 border-t md:hidden">
               <p className="px-3 pb-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">
                 Theme
               </p>
@@ -180,7 +223,7 @@ export function AppLayout({ children }: AppLayoutProps) {
           </nav>
         </aside>
 
-        {/* Mobile backdrop */}
+        {/* Mobile backdrop overlay */}
         {mobileOpen && (
           <div
             className="fixed inset-0 top-14 z-30 bg-black/50 md:hidden"
@@ -189,7 +232,7 @@ export function AppLayout({ children }: AppLayoutProps) {
         )}
 
         {/* ── Main content ──────────────────────────────────────────────── */}
-        <main className="flex-1 min-w-0 p-4 md:p-6">
+        <main className="flex-1 min-w-0 p-3 sm:p-4 md:p-6">
           {children}
         </main>
       </div>
