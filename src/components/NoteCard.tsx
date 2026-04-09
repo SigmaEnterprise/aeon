@@ -370,18 +370,31 @@ function InlineCommentItem({ root, comment, depth = 0, allComments, onReply }: I
   const [isSubmitting, setIsSubmitting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Find direct replies: for NIP-10 kind 1 replies look for the last `e` tag pointing here;
-  // for NIP-22 kind 1111 replies look for lowercase `e` tag pointing here.
+  // NIP-10 direct-reply resolution.
+  //
+  // Modern clients emit marked e-tags: ["e", id, relay, "root"] / ["e", id, relay, "reply"].
+  // Legacy (positional) clients: first e = root, last e = reply, middle = mention.
+  // We handle both so old threads render correctly.
+  //
+  // NIP-22 kind:1111: lowercase "e" tag points at the immediate parent comment.
   const directReplies = allComments.filter(c => {
     if (c.kind === 1) {
-      // NIP-10: the "reply" marker e-tag, or simply the last e-tag
-      const replyTag = c.tags.find(t => t[0] === 'e' && t[3] === 'reply');
-      if (replyTag) return replyTag[1] === comment.id;
-      // Fallback: last e-tag (for clients that don't use markers)
       const eTags = c.tags.filter(t => t[0] === 'e');
-      return eTags.length > 0 && eTags[eTags.length - 1][1] === comment.id;
+      if (eTags.length === 0) return false;
+
+      // ── Marked style (preferred) ──────────────────────────────────────
+      const replyMarker = eTags.find(t => t[3] === 'reply');
+      if (replyMarker) return replyMarker[1] === comment.id;
+
+      // No "reply" marker: if there's only one e-tag it acts as both root
+      // and reply — treat it as a direct reply to that event.
+      if (eTags.length === 1) return eTags[0][1] === comment.id;
+
+      // ── Positional fallback (legacy clients) ──────────────────────────
+      // first = root, last = reply, any in between = mention
+      return eTags[eTags.length - 1][1] === comment.id;
     }
-    // NIP-22: lowercase e tag = parent reference
+    // NIP-22: lowercase "e" tag = immediate parent
     const eTag = c.tags.find(([name]) => name === 'e')?.[1];
     return eTag === comment.id;
   }).sort((a, b) => a.created_at - b.created_at);
@@ -547,6 +560,46 @@ interface InlineCommentsPanelProps {
   isOpen: boolean;
 }
 
+// ─── Full thread loader ───────────────────────────────────────────────────────
+//
+// For a kind:1 note that is itself a reply, we fetch the entire conversation
+// by querying from the root event ID. This gives users the full context.
+//
+// Steps:
+//  1. Find the root event ID from this note's e-tags (marked or positional)
+//  2. If rootId !== event.id, fetch all kind:1 events with #e = [rootId]
+//  3. This gives every note in the thread including ancestors and siblings
+
+function useFullThread(event: NostrEvent, enabled: boolean) {
+  const { nostr } = useNostr();
+
+  // Resolve root ID: explicit "root" marker > first positional e-tag > self
+  const rootId = (() => {
+    const eTags = event.tags.filter(t => t[0] === 'e');
+    const rootMarker = eTags.find(t => t[3] === 'root');
+    if (rootMarker) return rootMarker[1];
+    if (eTags.length > 0) return eTags[0][1];
+    return event.id;
+  })();
+
+  const isReply = rootId !== event.id;
+
+  return useQuery<NostrEvent[]>({
+    queryKey: ['nip10-full-thread', rootId],
+    queryFn: async () => {
+      if (!isReply) return [];
+      // Fetch all notes referencing the root (direct and nested replies)
+      const events = await nostr.query(
+        [{ kinds: [1], '#e': [rootId], limit: 200 }],
+        { signal: AbortSignal.timeout(10000) }
+      );
+      return events.sort((a, b) => a.created_at - b.created_at);
+    },
+    enabled: enabled && isReply,
+    staleTime: 60_000,
+  });
+}
+
 function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
   const { user } = useCurrentUser();
   const { mutateAsync: publishEvent } = useNostrPublish();
@@ -558,6 +611,10 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
   const { data: engagementData, isLoading: engagementLoading, refetch: refetchEngagement } =
     useEventEngagement(event.id, isKind1 && isOpen);
 
+  // Full thread context: if this note is itself a reply, load the whole conversation
+  const { data: fullThreadEvents = [], isLoading: threadLoading } =
+    useFullThread(event, isKind1 && isOpen);
+
   // For other kinds (30023 articles, etc.) — use the NIP-22 comments hook
   const { data: commentsData, isLoading: commentsLoading } =
     useComments(event, 300);
@@ -565,12 +622,13 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
   const [text, setText] = useState('');
   const [mentionedPubkeys, setMentionedPubkeys] = useState<Set<string>>(new Set());
   const [isSubmittingKind1, setIsSubmittingKind1] = useState(false);
+  const [showFullThread, setShowFullThread] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Derive the list to render
-  const isLoading = isKind1 ? engagementLoading : commentsLoading;
+  const isLoading = isKind1 ? (engagementLoading || threadLoading) : commentsLoading;
 
-  // For kind:1: all replies are "top-level" from the engagement hook
+  // For kind:1: all direct replies to this event from the engagement hook
   const kind1Replies: NostrEvent[] = engagementData?.replies ?? [];
 
   // For NIP-22: use the threaded structure
@@ -579,7 +637,18 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
 
   const topLevel = isKind1 ? kind1Replies : nip22TopLevel;
   // allComments used for thread resolution inside InlineCommentItem
-  const allComments = isKind1 ? kind1Replies : nip22AllComments;
+  // Merge the full thread events so nested reply counts are accurate
+  const allComments = isKind1
+    ? [...new Map([...fullThreadEvents, ...kind1Replies].map(e => [e.id, e])).values()]
+    : nip22AllComments;
+
+  // Does this note have ancestor context to show?
+  const hasFullThread = fullThreadEvents.length > 0;
+  // Ancestors: events in the thread that are NOT direct replies to this note
+  const ancestors = fullThreadEvents.filter(e =>
+    e.id !== event.id &&
+    !kind1Replies.some(r => r.id === e.id)
+  ).sort((a, b) => a.created_at - b.created_at);
 
   useEffect(() => {
     if (isOpen) {
@@ -589,38 +658,94 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
 
   if (!isOpen) return null;
 
+  // ── NIP-10 root resolution ─────────────────────────────────────────────────
+  //
+  // Walk the event's e-tags to find the canonical root ID.
+  // Priority: explicit "root" marker > first positional e-tag > event itself.
+  // This ensures the root stays constant throughout the entire thread even
+  // when replying to a note that is itself already a reply.
+  function resolveNip10Root(ev: NostrEvent): { rootId: string; rootRelay: string } {
+    const eTags = ev.tags.filter(t => t[0] === 'e');
+    // 1. Explicit root marker
+    const rootMarker = eTags.find(t => t[3] === 'root');
+    if (rootMarker) return { rootId: rootMarker[1], rootRelay: rootMarker[2] ?? '' };
+    // 2. Positional fallback: first e-tag is root
+    if (eTags.length > 0) return { rootId: eTags[0][1], rootRelay: eTags[0][2] ?? '' };
+    // 3. The event is itself the root
+    return { rootId: ev.id, rootRelay: '' };
+  }
+
+  // ── Collect all pubkeys in the conversation for p-tag propagation ──────────
+  //
+  // NIP-10 convention: when replying, include p-tags for everyone already in
+  // the conversation so they receive notifications. This is the original
+  // author of the root event + all p-tags from the parent note + any @mentions.
+  function buildPTags(
+    parentEvent: NostrEvent,
+    extraMentions?: Set<string>
+  ): string[][] {
+    const seen = new Set<string>();
+    const pTags: string[][] = [];
+
+    const addPubkey = (pk: string) => {
+      // Never notify ourselves
+      if (user && pk === user.pubkey) return;
+      if (seen.has(pk)) return;
+      seen.add(pk);
+      pTags.push(['p', pk]);
+    };
+
+    // Author of the note being replied to (always first)
+    addPubkey(parentEvent.pubkey);
+
+    // Carry forward all existing p-tags from the parent so everyone in the
+    // conversation stays in the loop (NIP-10 convention)
+    for (const tag of parentEvent.tags) {
+      if (tag[0] === 'p' && tag[1]) addPubkey(tag[1]);
+    }
+
+    // Any @mentions typed by the user
+    if (extraMentions) {
+      for (const pk of extraMentions) addPubkey(pk);
+    }
+
+    return pTags;
+  }
+
   // ── Publish strategy ──────────────────────────────────────────────────────
-  // Top-level comment on a kind:1 post → NIP-10 kind:1 reply
+  // Top-level reply on a kind:1 post → NIP-10 marked kind:1 reply
   const handleSubmitKind1 = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!text.trim() || !user || isSubmittingKind1) return;
     setIsSubmittingKind1(true);
 
-    // Determine root for NIP-10 threading
-    const existingRoot = event.tags.find(t => t[0] === 'e' && t[3] === 'root');
-    const rootId = existingRoot ? existingRoot[1] : event.id;
+    const { rootId, rootRelay } = resolveNip10Root(event);
+    const isDirectReplyToRoot = rootId === event.id;
 
-    // Build p-tags: original author + any @mentions (NIP-27)
-    const pTags: string[][] = [['p', event.pubkey]];
-    for (const pk of mentionedPubkeys) {
-      if (pk !== event.pubkey) pTags.push(['p', pk]);
+    const tags: string[][] = [];
+
+    // root e-tag — always present
+    tags.push(['e', rootId, rootRelay, 'root']);
+
+    // reply e-tag — only when not replying directly to the root
+    // (NIP-10: "If replying directly to the root, use only root")
+    if (!isDirectReplyToRoot) {
+      tags.push(['e', event.id, '', 'reply']);
     }
+
+    // p-tags: propagate full conversation participants
+    tags.push(...buildPTags(event, mentionedPubkeys));
 
     try {
       await publishEvent({
         kind: 1,
         content: text.trim(),
-        tags: [
-          ['e', rootId, '', 'root'],
-          ['e', event.id, '', 'reply'],
-          ...pTags,
-        ],
+        tags,
         created_at: Math.floor(Date.now() / 1000),
       });
       toast({ title: 'Reply posted!' });
       setText('');
       setMentionedPubkeys(new Set());
-      // Refetch engagement to show the new reply
       setTimeout(() => refetchEngagement(), 800);
     } catch {
       toast({ title: 'Failed to post reply', variant: 'destructive' });
@@ -629,35 +754,26 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
     }
   };
 
-  // Reply to a kind:1 comment → also a NIP-10 kind:1 reply
+  // Reply to a kind:1 comment deep in the thread → NIP-10 marked kind:1 reply.
+  // root stays constant (the thread root), reply points to the parent comment.
   const handleReplyToKind1Comment = async (
     parentComment: NostrEvent,
     replyText: string,
     mentions?: Set<string>
   ) => {
-    const existingRoot = event.tags.find(t => t[0] === 'e' && t[3] === 'root');
-    const rootId = existingRoot ? existingRoot[1] : event.id;
+    // The root of this whole thread — resolved from the top-level event
+    const { rootId, rootRelay } = resolveNip10Root(event);
 
-    const pTags: string[][] = [
-      ['p', parentComment.pubkey],
-      ['p', event.pubkey],
+    const tags: string[][] = [
+      ['e', rootId, rootRelay, 'root'],
+      ['e', parentComment.id, '', 'reply'],
+      ...buildPTags(parentComment, mentions),
     ];
-    if (mentions) {
-      for (const pk of mentions) {
-        if (pk !== parentComment.pubkey && pk !== event.pubkey) {
-          pTags.push(['p', pk]);
-        }
-      }
-    }
 
     await publishEvent({
       kind: 1,
       content: replyText,
-      tags: [
-        ['e', rootId, '', 'root'],
-        ['e', parentComment.id, '', 'reply'],
-        ...pTags,
-      ],
+      tags,
       created_at: Math.floor(Date.now() / 1000),
     });
     setTimeout(() => refetchEngagement(), 800);
@@ -705,6 +821,51 @@ function InlineCommentsPanel({ event, isOpen }: InlineCommentsPanelProps) {
         <MessageSquare className="h-3.5 w-3.5" />
         {isKind1 ? 'Replies' : 'Comments'} {!isLoading && `(${topLevel.length})`}
       </p>
+
+      {/* ── Full thread context banner (NIP-10) ─────────────────────────
+          Shown when this note is itself a reply — lets the user see the
+          entire conversation by loading ancestors and sibling branches.
+      ─────────────────────────────────────────────────────────────────── */}
+      {isKind1 && hasFullThread && (
+        <div className="rounded-lg border border-dashed bg-background/50 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowFullThread(v => !v)}
+            className="w-full flex items-center justify-between px-3 py-2 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+          >
+            <span className="flex items-center gap-1.5">
+              <MessageSquare className="h-3 w-3" />
+              View full conversation ({ancestors.length + topLevel.length + 1} notes)
+            </span>
+            {showFullThread ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+          </button>
+
+          {showFullThread && (
+            <div className="px-3 pb-3 space-y-2 border-t border-dashed">
+              <p className="text-[10px] text-muted-foreground pt-2 pb-1 font-medium uppercase tracking-wider">
+                Thread context
+              </p>
+              {ancestors.map(ancestor => (
+                <InlineCommentItem
+                  key={ancestor.id}
+                  root={event}
+                  comment={ancestor}
+                  depth={0}
+                  allComments={allComments}
+                  onReply={onReply}
+                />
+              ))}
+              {ancestors.length > 0 && (
+                <div className="border-l-2 border-primary/40 pl-3 py-1">
+                  <p className="text-[10px] text-primary font-semibold uppercase tracking-wider">
+                    ↑ this note ↓ replies
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Compose box */}
       {user ? (

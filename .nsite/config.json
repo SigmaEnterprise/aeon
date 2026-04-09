@@ -4,13 +4,18 @@
     "wss://relay.dreamith.to",
     "wss://relay.nsite.lol",
     "wss://relay.nosto.re",
-    "wss://relay.primal.net"
+    "wss://relay.primal.net",
+    "wss://librepyramid.libretechsystems.xyz",
+    "wss://dynasty.libretechsystems.xyz",
+    "wss://gebelbarkal.libretechsystems.xyz"
   ],
   "servers": [
     "https://blossom.ditto.pub",
     "https://blossom.dreamith.to",
     "https://blossom.primal.net",
-    "https://cdn.sovbit.host"
+    "https://cdn.sovbit.host",
+    "https://librepyramid.libretechsystems.xyz",
+    "https://dynasty.libretechsystems.xyz"
   ],
   "id": "aeon",
   "title": "Aeon",

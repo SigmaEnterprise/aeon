@@ -1,0 +1,54 @@
+{
+  // Aeon — Cloudflare Workers + Pages deployment configuration
+  // Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+
+  "name": "aeon",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // ── Static assets (SPA) ──────────────────────────────────────────────────
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    // Serve index.html for any unmatched route (React Router SPA mode)
+    "not_found_handling": "single-page-application"
+  },
+
+  // ── Observability ─────────────────────────────────────────────────────────
+  // Matches the settings requested: logs enabled + persisted, traces disabled.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true
+    }
+  },
+
+  // ── Build ─────────────────────────────────────────────────────────────────
+  "build": {
+    "command": "npm run build",
+    "cwd": ".",
+    "watch_dir": "src"
+  },
+
+  // ── Environments ──────────────────────────────────────────────────────────
+  // Keep all environments consistent by sharing top-level settings.
+  // Override only what differs per environment below.
+
+  "env": {
+    "production": {
+      "name": "aeon",
+      "routes": [
+        {
+          "pattern": "aeon.ceronode.workers.dev/*",
+          "zone_name": "ceronode.workers.dev"
+        }
+      ]
+    },
+    "preview": {
+      "name": "aeon-preview"
+    }
+  }
+}

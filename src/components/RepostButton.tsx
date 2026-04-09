@@ -217,23 +217,41 @@ export function RepostButton({ event, className }: RepostButtonProps) {
     // NIP-18: kind:6 for kind:1 content, kind:16 for everything else
     const repostKind = event.kind === 1 ? 6 : 16;
 
-    // Find a relay hint — we use empty string as fallback
-    const relayHint = '';
+    // Whether this is an addressable event (kinds 30000-39999)
+    // For addressable events, we use an "a" tag pointing to the current
+    // coordinate (pubkey:kind:d-tag) so the repost tracks the latest version.
+    // An "e" tag is still included as a relay hint to a specific instance.
+    const isAddressable = event.kind >= 30000 && event.kind < 40000;
+    const dTag = event.tags.find(t => t[0] === 'd')?.[1] ?? '';
 
-    const tags: string[][] = [
-      ['e', event.id, relayHint],
-      ['p', event.pubkey],
-    ];
+    const tags: string[][] = [];
 
-    // kind:16 generic reposts SHOULD include a k tag with the kind number
+    if (isAddressable) {
+      // a tag: points to the addressable event coordinate (current version)
+      tags.push(['a', `${event.kind}:${event.pubkey}:${dTag}`]);
+      // e tag still included as a hint to the specific version being reposted
+      tags.push(['e', event.id, '']);
+    } else {
+      // Regular event: just the e tag
+      tags.push(['e', event.id, '']);
+    }
+
+    // p tag: always tag the original author
+    tags.push(['p', event.pubkey]);
+
+    // kind:16 generic reposts MUST include a k tag with the original kind number
     if (repostKind === 16) {
       tags.push(['k', String(event.kind)]);
     }
 
+    // NIP-18 bandwidth note: for addressable events (which can be updated),
+    // omit the content entirely — the client will fetch the latest version
+    // via the 'a' coordinate anyway. For regular events, also omit content
+    // since the relay delivers it on fetch. Bandwidth savings > display speed.
     publishEvent(
       {
         kind: repostKind,
-        content: JSON.stringify(event),
+        content: '',
         tags,
         created_at: Math.floor(Date.now() / 1000),
       },

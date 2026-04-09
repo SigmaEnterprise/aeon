@@ -33,14 +33,23 @@ export function useReposts(event: NostrEvent, enabled = true) {
   return useQuery<RepostData>({
     queryKey: ['reposts', event.id],
     queryFn: async () => {
+      const isAddressable = event.kind >= 30000 && event.kind < 40000;
+      const dTag = event.tags.find(t => t[0] === 'd')?.[1] ?? '';
+      const aCoord = `${event.kind}:${event.pubkey}:${dTag}`;
+
+      // Build filters: always query by event ID (#e), and also by address (#a)
+      // for addressable events so we catch both old-style and new-style reposts.
+      const repostFilters = isAddressable
+        ? [
+            { kinds: [16], '#e': [event.id], limit: 100 },
+            { kinds: [16], '#a': [aCoord], limit: 100 },
+          ]
+        : [{ kinds: [6, 16], '#e': [event.id], limit: 200 }];
+
       // Fetch kind:6 reposts, kind:16 generic reposts, and kind:1 quote reposts
       const events = await nostr.query(
         [
-          {
-            kinds: [6, 16],
-            '#e': [event.id],
-            limit: 200,
-          },
+          ...repostFilters,
           {
             kinds: [1],
             '#e': [event.id],
