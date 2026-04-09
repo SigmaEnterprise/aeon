@@ -79,9 +79,10 @@ export function AppLayout({ children }: AppLayoutProps) {
           </div>
 
           {/* Right: theme picker + notifications + login */}
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="flex items-center gap-2 ml-auto min-w-0">
+            {/* Theme picker — hidden on mobile to prevent header overflow */}
             <Select value={theme} onValueChange={setTheme}>
-              <SelectTrigger className="w-[140px] h-8 text-xs">
+              <SelectTrigger className="hidden sm:flex w-[140px] h-8 text-xs">
                 <SelectValue placeholder="Theme" />
               </SelectTrigger>
               <SelectContent>
@@ -128,6 +129,27 @@ export function AppLayout({ children }: AppLayoutProps) {
                 {item.label}
               </Link>
             ))}
+
+            {/* Mobile-only theme picker */}
+            <div className="pt-4 mt-3 border-t sm:hidden">
+              <p className="px-3 pb-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-widest">
+                Theme
+              </p>
+              <div className="px-3 pb-2">
+                <Select value={theme} onValueChange={v => { setTheme(v); setMobileOpen(false); }}>
+                  <SelectTrigger className="w-full h-8 text-xs">
+                    <SelectValue placeholder="Theme" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {THEMES.map(t => (
+                      <SelectItem key={t.value} value={t.value} className="text-xs">
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
 
             {/* Wallet + footer */}
             <div className="pt-4 mt-3 border-t space-y-0.5">
