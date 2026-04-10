@@ -59,11 +59,11 @@ export function AppLayout({ children }: AppLayoutProps) {
     <div className="min-h-screen bg-background text-foreground">
 
       {/* ── Top Header ──────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-50 border-b bg-card/80 backdrop-blur-md shadow-sm">
-        <div className="max-w-7xl mx-auto px-3 sm:px-4 h-14 flex items-center gap-2">
+      <header className="sticky top-0 z-50 border-b bg-card/80 backdrop-blur-md shadow-sm" style={{ top: 0 }}>
+        <div className="max-w-7xl mx-auto px-2 sm:px-4 h-14 flex items-center gap-1.5">
 
-          {/* Left: hamburger (mobile) + logo */}
-          <div className="flex items-center gap-2 shrink-0">
+          {/* Left: hamburger (mobile) + logo — always visible, never pushed out */}
+          <div className="flex items-center gap-1.5 shrink-0">
             {/* Hamburger — mobile only */}
             <Button
               variant="ghost"
@@ -75,8 +75,9 @@ export function AppLayout({ children }: AppLayoutProps) {
               {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
             </Button>
 
-            <Link to="/" className="flex items-center gap-2 shrink-0">
-              <AeonLogo size={30} />
+            <Link to="/" className="flex items-center gap-1.5 shrink-0">
+              <AeonLogo size={28} />
+              {/* Show "Aeon" only on sm+ to save space */}
               <span className="hidden sm:block font-bold text-lg tracking-tight bg-gradient-to-r from-violet-500 via-indigo-500 to-sky-500 bg-clip-text text-transparent">
                 Aeon
               </span>
@@ -84,10 +85,11 @@ export function AppLayout({ children }: AppLayoutProps) {
           </div>
 
           {/* Spacer */}
-          <div className="flex-1" />
+          <div className="flex-1 min-w-0" />
 
-          {/* Right: theme picker (sm+) + notifications + login/avatar */}
-          <div className="flex items-center gap-1.5 shrink-0">
+          {/* Right: theme picker (sm+) + notifications + login/avatar
+              On mobile we keep this as compact as possible so hamburger is never blocked */}
+          <div className="flex items-center gap-1 shrink-0">
             {/* Theme picker — hidden on mobile */}
             <Select value={theme} onValueChange={setTheme}>
               <SelectTrigger className="hidden sm:flex w-[130px] h-8 text-xs">
@@ -105,20 +107,17 @@ export function AppLayout({ children }: AppLayoutProps) {
             {/* Notifications bell (only when logged in — handled inside component) */}
             <NotificationsPanel />
 
-            {/* Login area:
-                - On mobile (< sm): show compact icon-only login button when logged out,
-                  or the full AccountSwitcher (which already hides the name on mobile)
-                - On sm+: show full LoginArea with both buttons */}
+            {/* Login area: full on sm+, compact on mobile */}
             <div className="hidden sm:block">
               <LoginArea className="max-w-xs" />
             </div>
 
-            {/* Mobile login: icon-only when logged out, avatar switcher when logged in */}
+            {/* Mobile: icon-only login when logged out, compact avatar when logged in */}
             {!currentUser && (
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-9 w-9 sm:hidden shrink-0"
+                className="h-8 w-8 sm:hidden shrink-0"
                 onClick={() => setMobileOpen(true)}
                 aria-label="Log in"
               >
@@ -138,13 +137,24 @@ export function AppLayout({ children }: AppLayoutProps) {
 
         {/* ── Sidebar ────────────────────────────────────────────────────── */}
         <aside className={cn(
-          "w-64 shrink-0 border-r min-h-[calc(100vh-3.5rem)] bg-card/50 sticky top-14 self-start",
-          // Desktop: always visible
-          "hidden md:block",
-          // Mobile: show as full-height overlay drawer when open
-          mobileOpen && "fixed inset-0 top-14 z-40 flex flex-col w-72 bg-card border-r overflow-y-auto"
+          // Desktop: sticky sidebar
+          "w-64 shrink-0 border-r bg-card/50 hidden md:block",
+          "sticky top-14 self-start",
+          // Sidebar height: fill the visible viewport below the header
+          "h-[calc(100vh-3.5rem)] overflow-y-auto",
+          // WebKit momentum scrolling for older iOS (iPhone 7+)
+          "[overflow-y:scroll] [-webkit-overflow-scrolling:touch]",
+          // Mobile: slide-in drawer overlaying content
+          mobileOpen && [
+            "fixed z-40 flex flex-col border-r",
+            "top-14 left-0 bottom-0 w-72",
+            "bg-card overflow-y-auto",
+            "[-webkit-overflow-scrolling:touch]",
+            // Use block to override hidden on small screens when open
+            "!block",
+          ]
         )}>
-          <nav className="p-3 space-y-0.5">
+          <nav className="p-3 space-y-0.5 pb-safe">
 
             {NAV_ITEMS.map(item => (
               <Link
@@ -233,7 +243,7 @@ export function AppLayout({ children }: AppLayoutProps) {
         )}
 
         {/* ── Main content ──────────────────────────────────────────────── */}
-        <main className="flex-1 min-w-0 p-3 sm:p-4 md:p-6">
+        <main className="flex-1 min-w-0 p-3 sm:p-4 md:p-6 pb-safe">
           {children}
         </main>
       </div>

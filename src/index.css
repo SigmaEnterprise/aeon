@@ -2,6 +2,36 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── iPhone / iOS safe-area & legacy WebKit fixes ────────────────────────
+   Supports iOS 11+ (iPhone 7 / 7+ runs iOS 15 max, Safari 15).
+   env() for safe-area-inset is supported from iOS 11.2+.
+   -webkit-overflow-scrolling: touch provides momentum scroll on older Safari.
+   100dvh/svh are not supported on iOS < 15.4; we fall back to 100vh.        */
+
+@layer utilities {
+  /* Safe-area bottom padding — used on main content and mobile nav */
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  /* Safe-area top padding — in case future fixed elements need it */
+  .pt-safe {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+}
+
+/* Global momentum scrolling for the page itself — critical for iOS Safari */
+html {
+  /* Fallback for very old WebKit */
+  -webkit-overflow-scrolling: touch;
+  /* Prevent elastic over-scroll causing layout glitches */
+  overflow-x: hidden;
+}
+
+body {
+  -webkit-text-size-adjust: 100%; /* Prevent iOS font inflation */
+  text-size-adjust: 100%;
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;
