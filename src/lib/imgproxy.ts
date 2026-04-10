@@ -28,6 +28,16 @@ export interface ImgProxyOptions {
   quality?: number;
 }
 
+/** Returns true if the URL points to an animated GIF (by extension or known CDN patterns). */
+export function isAnimatedGif(url: string): boolean {
+  if (!url) return false;
+  // Explicit .gif extension (with or without query string)
+  if (/\.gif(\?.*)?$/i.test(url)) return true;
+  // Known Nostr image hosts that serve GIFs without extension in path
+  if (/image\.nostr\.build\/.*gif/i.test(url)) return true;
+  return false;
+}
+
 /** URLs that should never be proxied */
 function shouldSkip(url: string): boolean {
   if (!url) return true;
@@ -69,8 +79,10 @@ export function imgproxyUrl(sourceUrl: string, opts: ImgProxyOptions = {}): stri
 /**
  * Feed image — fits within `width` px, auto height, WebP q82.
  * Used for single images in posts.
+ * GIFs are returned as-is to preserve animation.
  */
 export function feedImage(url: string, width = 800): string {
+  if (isAnimatedGif(url)) return url;
   return imgproxyUrl(url, { width, fit: 'inside', format: 'webp', quality: 82 });
 }
 
@@ -83,8 +95,10 @@ export function thumbImage(url: string, size = 600): string {
 
 /**
  * Avatar — small square, WebP q75.
+ * GIFs are returned as-is to preserve animation.
  */
 export function avatarImage(url: string, size = 128): string {
+  if (isAnimatedGif(url)) return url;
   return imgproxyUrl(url, { width: size, height: size, fit: 'cover', format: 'webp', quality: 75 });
 }
 
