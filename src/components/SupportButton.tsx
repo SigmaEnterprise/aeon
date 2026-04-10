@@ -1,6 +1,6 @@
 /**
- * SupportButton — Donation CTA for npub16d8gxt2z4k9e8sdpc0yyqzf5gp0np09ls4lnn630qzxzvwpl0rgq5h4rzv
- * Lightning Address: libretech-systems@rizful.com
+ * SupportButton — Donation CTA for npub16402t09028ppywh8t4fvrsw47wmqrhav2kwwsga3tsus5dlc4eqqpk2d7v
+ * Lightning Address: aeon@rizful.com
  *
  * Displays a tasteful "Support Us" card with:
  *  - Lightning zap button (opens QR / WebLN)
@@ -16,8 +16,8 @@ import { useToast } from '@/hooks/useToast';
 import { Zap, Copy, ExternalLink, Heart, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const SUPPORT_PUBKEY_HEX = 'd34e832d42ad8b93c1a1c3c8400934405f30bcbf857f39ea2f008c26383f78d0';
-const SUPPORT_LIGHTNING   = 'libretech-systems@rizful.com';
+const SUPPORT_PUBKEY_HEX = 'd55ea5bcaf51c2123ae75d52c1c1d5f3b601dfac559ce823b15c390a37f8ae40';
+const SUPPORT_LIGHTNING   = 'aeon@rizful.com';
 const SUPPORT_NPUB        = nip19.npubEncode(SUPPORT_PUBKEY_HEX);
 
 // Compact inline variant — used in sidebar

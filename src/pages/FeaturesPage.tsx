@@ -15,7 +15,8 @@ import {
   ArrowRight, Globe, Star, BookOpen, User, Lock, Key,
   Radio, Package, Zap, Wallet, Palette, Search, Shield,
   FileText, PenSquare, FilePen, Eye, Upload, Link as LinkIcon,
-  Bell, Telescope,
+  Bell, Telescope, Users, MessageSquare, Repeat2, Heart,
+  ShieldCheck, Cpu, Trash2, MessageCircle, Hash,
 } from 'lucide-react';
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
@@ -72,13 +73,52 @@ const FEATURE_GROUPS: FeatureGroup[] = [
         cta: 'Search',
       },
       {
+        icon: <Repeat2 className="h-5 w-5" />,
+        title: 'Reposts',
+        description:
+          'Repost any note (Kind 6) or generic content (Kind 16) with a single click. Reposts appear in the feed with proper attribution and a "Reposted by" label.',
+        nips: ['NIP-18'],
+        badge: 'K6 · K16',
+        badgeVariant: 'secondary',
+      },
+      {
+        icon: <Heart className="h-5 w-5" />,
+        title: 'Reactions',
+        description:
+          'Like, dislike, or send any emoji reaction to notes. Reaction counts are displayed on every note card, and your reaction is highlighted when active.',
+        nips: ['NIP-25'],
+      },
+      {
+        icon: <MessageCircle className="h-5 w-5" />,
+        title: 'Comments & Replies',
+        description:
+          'Reply to notes in threaded conversations. NIP-10 threading differentiates direct replies, root replies, and thread mentions — correctly labelled in every view.',
+        nips: ['NIP-01', 'NIP-10'],
+      },
+      {
         icon: <Bell className="h-5 w-5" />,
         title: 'Notifications',
         description:
-          'Get notified when someone replies to your notes, mentions you, reacts to your content, or sends a zap. Available from the bell icon in the header.',
-        nips: ['NIP-01', 'NIP-25'],
+          'Get notified when someone replies to your notes, mentions you, reacts to your content, or sends a zap. Tabbed by type (All / Reposts / Replies / Likes / Zaps) with live badge counts.',
+        nips: ['NIP-01', 'NIP-25', 'NIP-57'],
         badge: 'Live',
         badgeVariant: 'default',
+      },
+      {
+        icon: <ShieldCheck className="h-5 w-5" />,
+        title: 'VertexLab Reputation Filtering',
+        description:
+          'Enable "High Signal Only" in the notifications panel to hide likely-spam accounts. Powered by VertexLab PageRank scoring — accounts are scored on demand without leaking your data.',
+        nips: ['NIP-01'],
+        badge: 'Anti-Spam',
+        badgeVariant: 'secondary',
+      },
+      {
+        icon: <Trash2 className="h-5 w-5" />,
+        title: 'Event Deletions (NIP-09)',
+        description:
+          'Notifications whose referenced event has been deleted by the author are automatically filtered out — no phantom likes or comments from deleted posts.',
+        nips: ['NIP-09'],
       },
     ],
   },
@@ -104,7 +144,7 @@ const FEATURE_GROUPS: FeatureGroup[] = [
         nips: ['NIP-23'],
         path: '/articles/new',
         cta: 'New Article',
-        badge: 'New',
+        badge: 'Editor',
         badgeVariant: 'default',
       },
       {
@@ -115,8 +155,6 @@ const FEATURE_GROUPS: FeatureGroup[] = [
         nips: ['NIP-23'],
         path: '/articles',
         cta: 'My Articles',
-        badge: 'New',
-        badgeVariant: 'default',
       },
       {
         icon: <Eye className="h-5 w-5" />,
@@ -126,8 +164,15 @@ const FEATURE_GROUPS: FeatureGroup[] = [
         nips: ['NIP-27', 'NIP-21'],
         path: '/articles/new',
         cta: 'Try it',
-        badge: 'New',
-        badgeVariant: 'default',
+      },
+      {
+        icon: <MessageSquare className="h-5 w-5" />,
+        title: 'Article Comments',
+        description:
+          'Readers can post NIP-22 comments directly on articles. Comment threads are displayed below each article with full reply support and author avatars.',
+        nips: ['NIP-22'],
+        path: '/articles',
+        cta: 'Read Articles',
       },
     ],
   },
@@ -163,6 +208,15 @@ const FEATURE_GROUPS: FeatureGroup[] = [
         path: '/keys',
         cta: 'Manage Keys',
       },
+      {
+        icon: <FileText className="h-5 w-5" />,
+        title: 'Custom Feeds',
+        description:
+          'Follow specific pubkeys and build custom curated feeds. Great for monitoring a focused set of accounts without mixing in the global stream.',
+        nips: ['NIP-01', 'NIP-02'],
+        path: '/custom-feed',
+        cta: 'Custom Feeds',
+      },
     ],
   },
   {
@@ -187,6 +241,28 @@ const FEATURE_GROUPS: FeatureGroup[] = [
         description:
           'Randomised timestamps on every seal and gift wrap prevent timing correlation. Each gift wrap uses a fresh ephemeral signing key. The inner rumour is unsigned for deniability.',
         nips: ['NIP-59'],
+      },
+      {
+        icon: <Users className="h-5 w-5" />,
+        title: 'Marmot Encrypted Groups',
+        description:
+          'MLS (RFC 9420) encrypted group chat over Nostr. Create groups, invite members via NIP-59 gift-wrapped invitations (Kind 444), and send end-to-end encrypted messages (Kind 445). Provides forward secrecy and post-compromise security.',
+        nips: ['NIP-59'],
+        path: '/marmot',
+        cta: 'Marmot Groups',
+        badge: 'MLS · Alpha',
+        badgeVariant: 'secondary',
+      },
+      {
+        icon: <Cpu className="h-5 w-5" />,
+        title: 'MLS Key Packages',
+        description:
+          'Publish your MLS Key Package (Kind 443) so others can invite you to Marmot groups. Uses the MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 ciphersuite for strong identity binding.',
+        nips: ['NIP-59'],
+        path: '/marmot',
+        cta: 'Publish Key Package',
+        badge: 'K443',
+        badgeVariant: 'outline',
       },
     ],
   },
@@ -242,8 +318,13 @@ const FEATURE_GROUPS: FeatureGroup[] = [
         nips: ['NIP-23'],
         path: '/articles/new',
         cta: 'Try in Editor',
-        badge: 'New',
-        badgeVariant: 'default',
+      },
+      {
+        icon: <Hash className="h-5 w-5" />,
+        title: '@Mention Autocomplete',
+        description:
+          'Type @ while composing a note or article to trigger live autocomplete for Nostr profiles. The mention is inserted as a nostr:npub1... link conforming to NIP-21.',
+        nips: ['NIP-21', 'NIP-27'],
       },
     ],
   },
@@ -265,7 +346,8 @@ const FEATURE_GROUPS: FeatureGroup[] = [
         icon: <Telescope className="h-5 w-5" />,
         title: 'Relay Explorer',
         description:
-          'Browse raw events from any relay by pasting its WebSocket URL. Useful for debugging, exploring niche relays, or verifying your published events.',
+          'Browse raw events from any relay by pasting its WebSocket URL. Shows relay NIP-11 metadata (name, description, supported NIPs, limitations), live connection status, and recent notes.',
+        nips: ['NIP-11'],
         path: '/relay-explorer',
         cta: 'Explorer',
       },
@@ -377,7 +459,7 @@ function FeatureSection({ group }: { group: FeatureGroup }) {
 export function FeaturesPage() {
   useSeoMeta({
     title: 'Features — Aeon',
-    description: 'Everything Aeon can do: NIP-23 articles, NIP-17 private DMs, Lightning zaps, relay management, and more.',
+    description: 'Everything Aeon can do: NIP-23 articles, NIP-17 private DMs, Marmot MLS group chat, Lightning zaps, relay management, and more.',
   });
 
   const totalFeatures = FEATURE_GROUPS.reduce((acc, g) => acc + g.features.length, 0);
@@ -407,11 +489,11 @@ export function FeaturesPage() {
 
           <p className="text-muted-foreground max-w-xl mx-auto text-sm leading-relaxed">
             A privacy-first Nostr client with {totalFeatures} features across social feeds,
-            long-form publishing, shielded DMs, Lightning zaps, and more — all built on open protocols.
+            long-form publishing, shielded DMs, MLS group chat, Lightning zaps, and more — all built on open protocols.
           </p>
 
           <div className="flex flex-wrap justify-center gap-2 pt-1">
-            {['NIP-01', 'NIP-17', 'NIP-23', 'NIP-44', 'NIP-57', 'NIP-59', 'NIP-65', 'NWC'].map(nip => (
+            {['NIP-01', 'NIP-10', 'NIP-17', 'NIP-18', 'NIP-22', 'NIP-23', 'NIP-44', 'NIP-57', 'NIP-59', 'NIP-65', 'MLS·RFC9420', 'NWC'].map(nip => (
               <span key={nip} className="text-xs font-mono px-2 py-0.5 rounded-full border bg-muted text-muted-foreground">
                 {nip}
               </span>
