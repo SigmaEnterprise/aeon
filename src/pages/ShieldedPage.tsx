@@ -15,6 +15,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useSeoMeta } from '@unhead/react';
 import { useNostr } from '@nostrify/react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useLocation } from 'react-router-dom';
 import { nip19, nip44, generateSecretKey, getPublicKey, finalizeEvent, getEventHash } from 'nostr-tools';
 import { AppLayout } from '@/components/AppLayout';
 import { LoginArea } from '@/components/auth/LoginArea';
@@ -223,10 +224,17 @@ export function ShieldedPage() {
   const { config } = useAppContext();
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const location = useLocation();
+
+  // Support deep-linking from profiles: /shielded with state.recipientPubkey
+  const initialRecipient = (location.state as { recipientPubkey?: string } | null)?.recipientPubkey ?? null;
 
   const [recipientInput, setRecipientInput] = useState('');
-  const [activeRecipient, setActiveRecipient] = useState<string | null>(null);
-  const [contacts, setContacts] = useState<ConversationContact[]>([]);
+  const [activeRecipient, setActiveRecipient] = useState<string | null>(initialRecipient);
+  const [contacts, setContacts] = useState<ConversationContact[]>(() => {
+    if (initialRecipient) return [{ pubkey: initialRecipient, lastSeen: 0 }];
+    return [];
+  });
   const [messages, setMessages] = useState<DecryptedMsg[]>([]);
   const [messageInput, setMessageInput] = useState('');
   const [subjectInput, setSubjectInput] = useState('');
