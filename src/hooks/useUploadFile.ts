@@ -116,20 +116,31 @@ async function checkBlossomServer(serverUrl: string): Promise<'ok' | 'auth-requi
   }
 }
 
+/** CORS proxy base URL — used as fallback when direct upload is blocked */
+const CORS_PROXY = 'https://proxy.shakespeare.diy/?url=';
+
 /**
- * Upload a file to a single Blossom server.
- * Handles auth header, correct Content-Type, and response parsing.
+ * Build the upload URL, optionally routing through the CORS proxy.
+ * The proxy is needed for servers that don't set Access-Control-Allow-Origin: *
+ * (e.g. blossom.primal.net, nostr.build).
  */
-async function uploadToBlossom(
-  serverUrl: string,
+function buildUploadUrl(normalizedServerUrl: string, useProxy: boolean): string {
+  const directUrl = normalizedServerUrl + '/upload';
+  if (!useProxy) return directUrl;
+  return CORS_PROXY + encodeURIComponent(directUrl);
+}
+
+/**
+ * Attempt a single PUT /upload request.
+ * Returns the blob URL on success, throws on failure.
+ */
+async function doUploadRequest(
+  uploadUrl: string,
   file: File,
   fileBuffer: ArrayBuffer,
   fileHash: string,
   authToken: string
 ): Promise<string> {
-  const normalizedUrl = normalizeBlossomUrl(serverUrl);
-  const uploadUrl = normalizedUrl + '/upload';
-
   const response = await fetch(uploadUrl, {
     method: 'PUT',
     headers: {
@@ -146,7 +157,6 @@ async function uploadToBlossom(
     let errorText = `HTTP ${response.status}`;
     try {
       const body = await response.text();
-      // Check if it's a JSON error
       try {
         const json = JSON.parse(body) as { message?: string; error?: string };
         errorText = json.message ?? json.error ?? errorText;
@@ -155,7 +165,6 @@ async function uploadToBlossom(
       }
     } catch { /* ignore */ }
 
-    // Provide actionable error messages
     if (response.status === 413) {
       throw new Error(`File too large for this server (HTTP 413). Try a different server.`);
     }
@@ -176,6 +185,42 @@ async function uploadToBlossom(
   return url;
 }
 
+/**
+ * Upload a file to a single Blossom server.
+ * First tries a direct PUT /upload. If that fails due to CORS (TypeError / network error),
+ * automatically retries through the shakespeare.diy CORS proxy.
+ */
+async function uploadToBlossom(
+  serverUrl: string,
+  file: File,
+  fileBuffer: ArrayBuffer,
+  fileHash: string,
+  authToken: string
+): Promise<string> {
+  const normalizedUrl = normalizeBlossomUrl(serverUrl);
+
+  // ── Attempt 1: Direct upload (works for CORS-compliant servers) ──
+  try {
+    return await doUploadRequest(
+      buildUploadUrl(normalizedUrl, false),
+      file, fileBuffer, fileHash, authToken
+    );
+  } catch (err) {
+    const msg = (err as Error).message ?? '';
+    // TypeError usually means a network/CORS failure (browser won't reveal specifics).
+    // Other errors (auth, too large, 404) are real failures — don't retry via proxy.
+    const isCorsLikeError = err instanceof TypeError || msg.includes('Failed to fetch') || msg.includes('NetworkError');
+    if (!isCorsLikeError) throw err;
+    console.warn(`[Blossom] Direct upload blocked (likely CORS) for ${normalizedUrl}, retrying via CORS proxy…`);
+  }
+
+  // ── Attempt 2: Via CORS proxy (for servers blocking cross-origin requests) ──
+  return await doUploadRequest(
+    buildUploadUrl(normalizedUrl, true),
+    file, fileBuffer, fileHash, authToken
+  );
+}
+
 export function useUploadFile() {
   const { user } = useCurrentUser();
   const { data: blossomServers } = useBlossomServers();
@@ -187,12 +232,15 @@ export function useUploadFile() {
       }
 
       // CRITICAL: normalize all server URLs — wss:// → https://
+      // Default servers chosen for reliable CORS support in browser environments.
+      // blossom.primal.net, nostr.build, and void.cat are intentionally excluded
+      // because they block cross-origin requests from browser clients (CORS failure).
       const rawServers = blossomServers && blossomServers.length > 0
         ? blossomServers
         : [
-            'https://blossom.primal.net',
             'https://cdn.satellite.earth',
-            'https://blossom.nostr.build',
+            'https://cdn.nostrcheck.me',
+            'https://blossom.nostr.hu',
           ];
 
       const servers = rawServers.map(normalizeBlossomUrl);

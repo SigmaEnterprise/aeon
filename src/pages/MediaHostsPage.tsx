@@ -115,7 +115,11 @@ export function MediaHostsPage() {
   const [uploadProgress, setUploadProgress] = useState(0);
 
   /**
-   * Probe a Blossom server using the correct BUD-01 detection strategy:
+   * Probe a Blossom server using the correct BUD-01 detection strategy.
+   *
+   * Many servers correctly implement BUD-01 CORS but the probe may still fail
+   * if the server blocks OPTIONS/HEAD from the browser. We try the probe directly
+   * first, then fall back to the shakespeare CORS proxy if a network/CORS error occurs.
    *
    * Priority order:
    *  1. HEAD /upload — BUD-02 endpoint detection (Blossom native)
@@ -125,22 +129,37 @@ export function MediaHostsPage() {
    *
    * A Blossom server is considered "online" if ANY of these return a non-5xx
    * response (including 401 auth-required, 405 method not allowed, etc.)
-   * because those still prove the server is alive and responding.
    */
   const probeHost = async (rawUrl: string) => {
     const url = normalizeBlossomUrl(rawUrl);
+    const proxyPrefix = 'https://proxy.shakespeare.diy/?url=';
     setProbes(prev => ({ ...prev, [rawUrl]: { status: 'probing', message: 'Probing server…' } }));
 
+    /**
+     * Try a single fetch, optionally via CORS proxy.
+     * Returns the Response or null on network error.
+     */
+    const tryFetch = async (
+      fetchUrl: string,
+      options: RequestInit & { signal?: AbortSignal },
+      useProxy = false
+    ): Promise<Response | null> => {
+      const target = useProxy ? proxyPrefix + encodeURIComponent(fetchUrl) : fetchUrl;
+      try {
+        return await fetch(target, options);
+      } catch {
+        return null;
+      }
+    };
+
     // ── Step 1: BUD-01/02 native detection ──
-    // HEAD /upload tells us if it's a Blossom server. Any response (even 401)
-    // means the server is live. 404 means /upload doesn't exist (not Blossom).
-    try {
-      const headResp = await fetch(url + '/upload', {
+    // HEAD /upload: any response except 404/5xx means server is BUD-02 capable
+    for (const useProxy of [false, true]) {
+      const headResp = await tryFetch(url + '/upload', {
         method: 'HEAD',
         signal: AbortSignal.timeout(8000),
-      });
-      // 200, 401, 402, 405 all mean the server is alive and BUD-02 capable
-      if (headResp.status !== 404 && headResp.status < 500) {
+      }, useProxy);
+      if (headResp && headResp.status !== 404 && headResp.status < 500) {
         const authRequired = headResp.status === 401 || headResp.status === 402;
         setProbes(prev => ({
           ...prev,
@@ -154,38 +173,36 @@ export function MediaHostsPage() {
         }));
         return;
       }
-    } catch { /* server may not support HEAD, try next */ }
+      if (headResp) break; // Got a response (e.g. 404) — no need to try proxy
+    }
 
     // ── Step 2: GET / with application/json ──
-    // BUD-01 servers may return server info at root
-    try {
-      const rootResp = await fetch(url + '/', {
+    for (const useProxy of [false, true]) {
+      const rootResp = await tryFetch(url + '/', {
         method: 'GET',
         headers: { Accept: 'application/json' },
         signal: AbortSignal.timeout(6000),
-      });
-      if (rootResp.ok) {
+      }, useProxy);
+      if (rootResp?.ok) {
         let data: ProbeData | null = null;
         try {
           const text = await rootResp.text();
           data = JSON.parse(text) as ProbeData;
         } catch { /* not JSON, but server is alive */ }
-
-        if (data || rootResp.ok) {
-          setProbes(prev => ({
-            ...prev,
-            [rawUrl]: {
-              status: 'ok',
-              message: data?.name ? `${data.name}` : 'Server online',
-              probeUrl: url + '/',
-              protocol: 'blossom',
-              data: data ?? undefined,
-            }
-          }));
-          return;
-        }
+        setProbes(prev => ({
+          ...prev,
+          [rawUrl]: {
+            status: 'ok',
+            message: data?.name ? `${String(data.name)}` : 'Server online',
+            probeUrl: url + '/',
+            protocol: 'blossom',
+            data: data ?? undefined,
+          }
+        }));
+        return;
       }
-    } catch { /* try next */ }
+      if (rootResp) break;
+    }
 
     // ── Step 3: NIP-96 JSON detection ──
     const nip96Candidates = [
@@ -195,12 +212,12 @@ export function MediaHostsPage() {
     ];
 
     for (const candidate of nip96Candidates) {
-      try {
-        const resp = await fetch(candidate, { signal: AbortSignal.timeout(6000) });
-        if (!resp.ok) continue;
-        const text = await resp.text();
+      for (const useProxy of [false, true]) {
+        const resp = await tryFetch(candidate, { signal: AbortSignal.timeout(6000) }, useProxy);
+        if (!resp?.ok) { if (resp) break; continue; }
+        const text = await resp.text().catch(() => '');
         let data: ProbeData | null = null;
-        try { data = JSON.parse(text) as ProbeData; } catch { continue; }
+        try { data = JSON.parse(text) as ProbeData; } catch { break; }
         if (data) {
           const flat: ProbeData = { ...data };
           if (flat.data && typeof flat.data === 'object') Object.assign(flat, flat.data);
@@ -216,17 +233,17 @@ export function MediaHostsPage() {
           }));
           return;
         }
-      } catch { /* try next */ }
+        break;
+      }
     }
 
     // ── Step 4: Last resort — plain GET / ──
-    try {
-      const resp = await fetch(url + '/', {
+    for (const useProxy of [false, true]) {
+      const resp = await tryFetch(url + '/', {
         method: 'GET',
         signal: AbortSignal.timeout(5000),
-      });
-      if (resp.status < 500) {
-        // Server responded (even with 4xx), so it's alive
+      }, useProxy);
+      if (resp && resp.status < 500) {
         setProbes(prev => ({
           ...prev,
           [rawUrl]: {
@@ -240,7 +257,8 @@ export function MediaHostsPage() {
         }));
         return;
       }
-    } catch { /* truly unreachable */ }
+      if (resp) break;
+    }
 
     setProbes(prev => ({
       ...prev,
@@ -255,13 +273,17 @@ export function MediaHostsPage() {
 
   const addServer = () => {
     let trimmed = newUrl.trim().replace(/\/+$/, '');
-    // Auto-fix protocol: wss:// → https://
+    // Auto-fix protocol: wss:// → https://, ws:// → http://
     if (trimmed.startsWith('wss://')) trimmed = 'https://' + trimmed.slice(6);
     else if (trimmed.startsWith('ws://')) trimmed = 'http://' + trimmed.slice(5);
+    // Auto-add https:// if no scheme is present (e.g. user typed "cdn.satellite.earth")
+    else if (trimmed && !trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+      trimmed = 'https://' + trimmed;
+    }
     if (!trimmed || (!trimmed.startsWith('https://') && !trimmed.startsWith('http://'))) {
       toast({
         title: 'Invalid URL',
-        description: 'Blossom servers use HTTPS (not wss://). Example: https://blossom.example.com',
+        description: 'Blossom servers use HTTPS. Example: https://cdn.satellite.earth',
         variant: 'destructive'
       });
       return;
@@ -333,6 +355,23 @@ export function MediaHostsPage() {
     setUploadProgress(0);
     setUploadResult(null);
 
+    const PROXY = 'https://proxy.shakespeare.diy/?url=';
+
+    /** Perform a single PUT /upload and return the Response. */
+    const doPut = async (putUrl: string, body: ArrayBuffer, contentType: string, authToken: string, fileHash: string): Promise<Response> => {
+      return fetch(putUrl, {
+        method: 'PUT',
+        headers: {
+          'Authorization': 'Nostr ' + authToken,
+          'Content-Type': contentType,
+          'Content-Length': String(selectedFile!.size),
+          'X-SHA-256': fileHash,
+        },
+        body,
+        signal: AbortSignal.timeout(120000),
+      });
+    };
+
     try {
       const normalizedHost = normalizeBlossomUrl(uploadHost);
       const fileBuffer = await selectedFile.arrayBuffer();
@@ -348,19 +387,18 @@ export function MediaHostsPage() {
       );
       setUploadProgress(60);
 
-      // BUD-02: PUT /upload per spec
-      const uploadUrl = normalizedHost + '/upload';
-      const resp = await fetch(uploadUrl, {
-        method: 'PUT',
-        headers: {
-          'Authorization': 'Nostr ' + authB64url,
-          'Content-Type': selectedFile.type || 'application/octet-stream',
-          'Content-Length': String(selectedFile.size),
-          'X-SHA-256': fileHash,
-        },
-        body: fileBuffer,
-        signal: AbortSignal.timeout(120000),
-      });
+      const contentType = selectedFile.type || 'application/octet-stream';
+      const directUrl = normalizedHost + '/upload';
+
+      // BUD-02: PUT /upload — try direct first, then CORS proxy on network error
+      let resp: Response;
+      try {
+        resp = await doPut(directUrl, fileBuffer, contentType, authB64url, fileHash);
+      } catch (netErr) {
+        // Network / CORS failure — retry via proxy
+        console.warn('[MediaHosts] Direct upload failed, retrying via CORS proxy:', (netErr as Error).message);
+        resp = await doPut(PROXY + encodeURIComponent(directUrl), fileBuffer, contentType, authB64url, fileHash);
+      }
 
       setUploadProgress(85);
 
@@ -582,7 +620,7 @@ export function MediaHostsPage() {
                 <HardDrive className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
                 <p className="text-muted-foreground text-sm">No media hosts configured. Add one above.</p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Popular Blossom servers: blossom.primal.net, cdn.satellite.earth
+                  Popular Blossom servers: cdn.satellite.earth, cdn.nostrcheck.me, blossom.nostr.hu
                 </p>
               </CardContent>
             </Card>
