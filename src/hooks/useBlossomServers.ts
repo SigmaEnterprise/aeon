@@ -19,22 +19,15 @@ import { useNostrPublish } from '@/hooks/useNostrPublish';
 const BLOSSOM_KIND = 10063;
 
 /**
- * Default well-known Blossom servers to pre-populate if none found.
- *
- * These servers are selected because they:
- *  - Correctly implement BUD-01 CORS headers (Access-Control-Allow-Origin: *)
- *  - Are reliably available from browser clients
- *  - Support BUD-02 PUT /upload with BUD-11 kind:24242 auth
- *
- * Intentionally excluded:
- *  - blossom.primal.net — blocks CORS from cross-origin browser clients
- *  - nostr.build       — blocks CORS from cross-origin browser clients
- *  - void.cat          — DNS no longer resolves (domain dead as of 2025)
+ * Default well-known Blossom servers.
+ * All uploads are routed through the /blossom-proxy Worker endpoint, so
+ * browser CORS is not a factor — any reachable BUD-02 server works.
+ * These defaults are well-known, high-availability public servers.
  */
 const DEFAULT_SERVERS = [
+  'https://blossom.nostr.build',
+  'https://blossom.band',
   'https://cdn.satellite.earth',
-  'https://cdn.nostrcheck.me',
-  'https://blossom.nostr.hu',
 ];
 
 export function useBlossomServers(pubkey?: string) {

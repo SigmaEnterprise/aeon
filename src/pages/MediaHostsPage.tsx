@@ -355,23 +355,6 @@ export function MediaHostsPage() {
     setUploadProgress(0);
     setUploadResult(null);
 
-    const PROXY = 'https://proxy.shakespeare.diy/?url=';
-
-    /** Perform a single PUT /upload and return the Response. */
-    const doPut = async (putUrl: string, body: ArrayBuffer, contentType: string, authToken: string, fileHash: string): Promise<Response> => {
-      return fetch(putUrl, {
-        method: 'PUT',
-        headers: {
-          'Authorization': 'Nostr ' + authToken,
-          'Content-Type': contentType,
-          'Content-Length': String(selectedFile!.size),
-          'X-SHA-256': fileHash,
-        },
-        body,
-        signal: AbortSignal.timeout(120000),
-      });
-    };
-
     try {
       const normalizedHost = normalizeBlossomUrl(uploadHost);
       const fileBuffer = await selectedFile.arrayBuffer();
@@ -387,23 +370,23 @@ export function MediaHostsPage() {
       );
       setUploadProgress(60);
 
-      const contentType = selectedFile.type || 'application/octet-stream';
-      const directUrl = normalizedHost + '/upload';
-
-      // BUD-02: PUT /upload — try direct first, then CORS proxy on network error
-      let resp: Response;
-      try {
-        resp = await doPut(directUrl, fileBuffer, contentType, authB64url, fileHash);
-      } catch (netErr) {
-        // Network / CORS failure — retry via proxy
-        console.warn('[MediaHosts] Direct upload failed, retrying via CORS proxy:', (netErr as Error).message);
-        resp = await doPut(PROXY + encodeURIComponent(directUrl), fileBuffer, contentType, authB64url, fileHash);
-      }
+      // Route via /blossom-proxy Worker endpoint — same-origin, no CORS issues
+      const proxyUrl = `/blossom-proxy?server=${encodeURIComponent(normalizedHost)}`;
+      const resp = await fetch(proxyUrl, {
+        method: 'PUT',
+        headers: {
+          'Authorization': 'Nostr ' + authB64url,
+          'Content-Type': selectedFile.type || 'application/octet-stream',
+          'Content-Length': String(selectedFile.size),
+          'X-SHA-256': fileHash,
+        },
+        body: fileBuffer,
+        signal: AbortSignal.timeout(120000),
+      });
 
       setUploadProgress(85);
 
       if (!resp.ok) {
-        // Check X-Reason header per BUD-01 spec
         const reason = resp.headers.get('X-Reason');
         const errText = reason ?? await resp.text().catch(() => `HTTP ${resp.status}`);
         throw new Error(`Upload failed (HTTP ${resp.status}): ${errText}`);
@@ -620,7 +603,7 @@ export function MediaHostsPage() {
                 <HardDrive className="h-10 w-10 mx-auto text-muted-foreground mb-3" />
                 <p className="text-muted-foreground text-sm">No media hosts configured. Add one above.</p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Popular Blossom servers: cdn.satellite.earth, cdn.nostrcheck.me, blossom.nostr.hu
+                  Popular Blossom servers: blossom.nostr.build, blossom.band, cdn.satellite.earth
                 </p>
               </CardContent>
             </Card>
