@@ -1,16 +1,15 @@
 /**
- * useUploadFile — Blossom BUD-02 file upload with comprehensive protocol fixes.
+ * useUploadFile — Blossom BUD-02 file upload.
  *
- * Protocol fixes implemented:
- *  1. HTTPS only — Blossom uses REST/HTTP, NEVER wss://. Any wss:// server URL
- *     is automatically rewritten to https:// before any network call.
- *  2. Server health check — Before uploading, a GET to the server root is made
- *     to verify availability. If the server requires auth (401/402), a signed
- *     NIP-42 Authorization header is included.
- *  3. BUD-11 auth (kind:24242) — Every upload is authenticated with a signed
- *     event containing the file hash (SHA-256) and expiration.
- *  4. Media optimization — After upload, returns both raw and proxy-optimized
- *     URLs for downstream consumers that want resized thumbnails.
+ * How it works:
+ *  1. HTTPS only — any wss:// URL is rewritten to https:// automatically.
+ *  2. No pre-probe — HEAD /upload is unreliable (some servers return 404 on
+ *     HEAD but work fine on PUT). We go straight to PUT /upload with auth.
+ *  3. BUD-11 auth (kind:24242) — signed event with SHA-256 hash + expiration.
+ *  4. CORS fallback — if direct PUT gets a TypeError/network error (CORS block),
+ *     automatically retries via the shakespeare.diy CORS proxy.
+ *  5. Multi-server — tries each server in the user's BUD-03 list in order,
+ *     falls back to hardcoded CORS-friendly defaults if no list is found.
  *
  * References:
  *  - https://github.com/hzrd149/blossom/blob/master/buds/02.md (BUD-02)
@@ -89,32 +88,10 @@ async function buildBlossomAuth(
   return base64urlEncode(JSON.stringify(event));
 }
 
-/**
- * Check if a Blossom server is reachable using BUD-01/02 protocol.
- *
- * Uses HEAD /upload per BUD-02 spec — any non-5xx response proves the server
- * is alive and supports the upload endpoint. This is the correct detection
- * strategy vs checking NIP-96 paths which pure Blossom servers don't have.
- *
- * Returns: 'ok' | 'auth-required' | 'error'
- */
-async function checkBlossomServer(serverUrl: string): Promise<'ok' | 'auth-required' | 'error'> {
-  try {
-    // BUD-02: HEAD /upload is the canonical probe for a Blossom server
-    const res = await fetch(serverUrl + '/upload', {
-      method: 'HEAD',
-      signal: AbortSignal.timeout(8000),
-    });
-    // Any response except 404/5xx means server is alive
-    if (res.status === 404 || res.status >= 500) return 'error';
-    if (res.status === 401 || res.status === 402) return 'auth-required';
-    return 'ok';
-  } catch {
-    // CORS pre-flight failure doesn't mean server is offline — try uploading anyway
-    // Many servers block HEAD from browsers but allow PUT with proper auth
-    return 'ok'; // optimistic — let the actual upload reveal any real failure
-  }
-}
+// NOTE: The checkBlossomServer() pre-probe (HEAD /upload) has been intentionally
+// removed. Several compliant Blossom servers (e.g. cdn.satellite.earth) return 404
+// on HEAD /upload but work correctly on PUT /upload with auth. Pre-probing caused
+// valid servers to be skipped. The PUT itself is the authoritative test.
 
 /** CORS proxy base URL — used as fallback when direct upload is blocked */
 const CORS_PROXY = 'https://proxy.shakespeare.diy/?url=';
@@ -257,22 +234,12 @@ export function useUploadFile() {
         file.size
       );
 
-      // Try each server in order, return on first success
+      // Try each server in order, return on first success.
+      // No pre-probe — go straight to PUT /upload with auth.
+      // The actual HTTP response from PUT is the only reliable indicator.
       let lastError: Error | null = null;
       for (const server of servers) {
         try {
-          // Probe server: BUD-01 HEAD /upload. CORS may block this in browser
-          // so a 'catch' returns 'ok' (optimistic) — the real PUT will reveal errors.
-          const serverStatus = await checkBlossomServer(server);
-
-          if (serverStatus === 'error') {
-            console.warn(`Blossom server returned 404/5xx: ${server}`);
-            lastError = new Error(`Server offline or returned an error: ${server}`);
-            continue;
-          }
-
-          // Proceed with upload regardless of 'ok' or 'auth-required' —
-          // we always send the BUD-11 auth token.
           const uploadedUrl = await uploadToBlossom(server, file, fileBuffer, fileHash, authToken);
 
           // Return NIP-94 compatible tags
@@ -297,15 +264,7 @@ export function useUploadFile() {
         }
       }
 
-      const errorMsg = lastError?.message ?? 'All Blossom servers failed';
-      // Provide specific guidance for the librepyramid error
-      if (errorMsg.toLowerCase().includes('offline') || errorMsg.toLowerCase().includes('endpoint')) {
-        throw new Error(
-          `${errorMsg}\n\nTip: Make sure your Blossom server URL starts with https:// (not wss://). ` +
-          `Go to Media Hosts page to verify your server configuration.`
-        );
-      }
-      throw lastError ?? new Error('All Blossom servers failed');
+      throw lastError ?? new Error('All Blossom servers failed. Go to Media Hosts to add or change your upload servers.');
     },
   });
 }
