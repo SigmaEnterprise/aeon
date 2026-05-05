@@ -17,25 +17,37 @@ export default defineConfig(() => ({
         target: 'http://localhost:8080', // not used — handled by configure
         bypass(req: IncomingMessage, res: ServerResponse) {
           const reqUrl = new URL(req.url ?? '', 'http://localhost');
+          if (req.method !== 'PUT') return null;
+
+          // Accept ?url= (full URL) or legacy ?server= (base + /upload)
+          const urlParam = reqUrl.searchParams.get('url');
           const serverParam = reqUrl.searchParams.get('server');
-          if (!serverParam || req.method !== 'PUT') return null;
 
-          let targetServer: string;
-          try {
-            targetServer = decodeURIComponent(serverParam).replace(/\/+$/, '');
-          } catch {
+          let uploadUrl: string;
+          if (urlParam) {
+            try { uploadUrl = decodeURIComponent(urlParam); }
+            catch {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Invalid ?url= parameter' }));
+              return false as unknown as string;
+            }
+          } else if (serverParam) {
+            try { uploadUrl = decodeURIComponent(serverParam).replace(/\/+$/, '') + '/upload'; }
+            catch {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Invalid ?server= parameter' }));
+              return false as unknown as string;
+            }
+          } else {
+            return null;
+          }
+
+          if (!uploadUrl.startsWith('https://')) {
             res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Invalid server URL' }));
+            res.end(JSON.stringify({ error: 'Upload URL must use https://' }));
             return false as unknown as string;
           }
 
-          if (!targetServer.startsWith('https://')) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Server must use https://' }));
-            return false as unknown as string;
-          }
-
-          const uploadUrl = targetServer + '/upload';
           const chunks: Buffer[] = [];
 
           req.on('data', (chunk: Buffer) => chunks.push(chunk));

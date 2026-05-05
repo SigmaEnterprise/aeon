@@ -2,23 +2,23 @@
  * useUploadFile — Blossom BUD-02 file upload via same-origin Worker proxy.
  *
  * WHY A PROXY IS REQUIRED:
- *   Every major Blossom server (blossom.nostr.build, blossom.band,
- *   cdn.satellite.earth, blossom.primal.net, etc.) does NOT send
- *   Access-Control-Allow-Origin headers on OPTIONS preflight responses.
- *   Browsers unconditionally block cross-origin PUT requests to these servers.
- *   The only working solution from a browser-hosted app is to proxy uploads
- *   through a same-origin server that adds CORS headers.
+ *   Every major Blossom server does NOT send Access-Control-Allow-Origin
+ *   headers on OPTIONS preflight responses. Browsers block all cross-origin
+ *   PUT requests. All uploads go through PUT /blossom-proxy on the same
+ *   origin; the Worker forwards server-side with CORS headers injected.
  *
- * HOW IT WORKS:
- *   All uploads go to PUT /blossom-proxy?server=<encoded-server-url> on the
- *   same origin (aeon.ceronode.workers.dev). The Cloudflare Worker in worker.ts
- *   forwards the request server-side to the Blossom server and returns the
- *   response with proper CORS headers attached.
+ * UPLOAD PATH AUTO-DISCOVERY:
+ *   BUD-02 standard path:  <server>/upload
+ *   Pyramid server path:   <server>/blossom/upload
+ *
+ *   We try the standard path first. On 404, we try /blossom/upload.
+ *   This handles self-hosted Pyramid servers (like aeon.libretechsystems.xyz)
+ *   without the user needing to know or enter the sub-path.
  *
  * References:
  *  - https://github.com/hzrd149/blossom/blob/master/buds/02.md (BUD-02)
  *  - https://github.com/hzrd149/blossom/blob/master/buds/11.md (BUD-11)
- *  - https://github.com/hzrd149/blossom/blob/master/buds/03.md (BUD-03)
+ *  - https://github.com/fiatjaf/pyramid (Pyramid blossom at /blossom/upload)
  */
 import { useMutation } from "@tanstack/react-query";
 import { useCurrentUser } from "./useCurrentUser";
@@ -31,21 +31,13 @@ async function sha256Hex(buf: ArrayBuffer): Promise<string> {
     .join('');
 }
 
-/**
- * BUD-11 spec: Authorization header MUST use Base64url without padding.
- * Standard btoa() produces base64 with +, /, = which strict servers reject.
- */
+/** BUD-11: Base64url without padding (not standard base64) */
 function base64urlEncode(str: string): string {
   const b64 = btoa(unescape(encodeURIComponent(str)));
   return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-/**
- * Normalize a Blossom server URL:
- *  - Strip trailing slashes
- *  - Convert wss:// → https://, ws:// → http://
- *  - Add https:// if no protocol present
- */
+/** Strip trailing slashes, fix wss:// → https://, add https:// if missing */
 function normalizeBlossomUrl(raw: string): string {
   let url = raw.trim().replace(/\/+$/, '');
   if (url.startsWith('wss://')) url = 'https://' + url.slice(6);
@@ -54,15 +46,10 @@ function normalizeBlossomUrl(raw: string): string {
   return url;
 }
 
-/**
- * Build BUD-11 authorization token (kind:24242).
- */
+/** Build BUD-11 kind:24242 authorization token */
 async function buildBlossomAuth(
   signer: { signEvent: (e: {
-    kind: number;
-    content: string;
-    tags: string[][];
-    created_at: number;
+    kind: number; content: string; tags: string[][]; created_at: number;
   }) => Promise<{ id: string; pubkey: string; sig: string; kind: number; content: string; tags: string[][]; created_at: number }> },
   fileHash: string,
 ): Promise<string> {
@@ -70,32 +57,24 @@ async function buildBlossomAuth(
   const event = await signer.signEvent({
     kind: 24242,
     content: 'Upload file',
-    tags: [
-      ['t', 'upload'],
-      ['x', fileHash],
-      ['expiration', String(now + 300)],
-    ],
+    tags: [['t', 'upload'], ['x', fileHash], ['expiration', String(now + 300)]],
     created_at: now,
   });
   return base64urlEncode(JSON.stringify(event));
 }
 
 /**
- * Upload a file to one Blossom server via the /blossom-proxy Worker endpoint.
- *
- * The proxy is on the same origin as the app, so no CORS preflight is needed.
- * The Worker forwards the PUT to <server>/upload server-side and returns
- * the Blossom BlobDescriptor JSON with CORS headers added.
+ * Try one PUT /blossom-proxy?url=<uploadUrl> request.
+ * Returns the blob URL on success, throws a typed error on failure.
  */
-async function uploadToBlossomViaProxy(
-  serverUrl: string,
+async function doProxyUpload(
+  uploadUrl: string,
   file: File,
   fileBuffer: ArrayBuffer,
   fileHash: string,
-  authToken: string
+  authToken: string,
 ): Promise<string> {
-  const normalized = normalizeBlossomUrl(serverUrl);
-  const proxyUrl = `/blossom-proxy?server=${encodeURIComponent(normalized)}`;
+  const proxyUrl = `/blossom-proxy?url=${encodeURIComponent(uploadUrl)}`;
 
   const response = await fetch(proxyUrl, {
     method: 'PUT',
@@ -117,20 +96,56 @@ async function uploadToBlossomViaProxy(
         const json = JSON.parse(body) as { message?: string; error?: string };
         errorText = json.message ?? json.error ?? errorText;
       } catch {
-        errorText = body.slice(0, 200) || errorText;
+        // body is plain text
+        if (body.trim() && !body.trim().startsWith('<')) {
+          errorText = body.slice(0, 200);
+        }
       }
     } catch { /* ignore */ }
 
-    if (response.status === 413) throw new Error(`File too large (HTTP 413). Try a smaller file or different server.`);
-    if (response.status === 401 || response.status === 403) throw new Error(`Authentication failed (HTTP ${response.status}): ${errorText}`);
-    if (response.status === 404) throw new Error(`Upload endpoint not found on ${normalized}. This server may not support BUD-02.`);
-    throw new Error(`Upload failed (HTTP ${response.status}): ${errorText}`);
+    const err = new Error(`HTTP ${response.status}: ${errorText}`) as Error & { status: number };
+    err.status = response.status;
+    throw err;
   }
 
   const json = await response.json().catch(() => null) as { url?: string; sha256?: string } | null;
-  const url: string | undefined = json?.url;
-  if (!url) throw new Error('Blossom server did not return a file URL');
-  return url;
+  const blobUrl = json?.url;
+  if (!blobUrl) throw new Error('Blossom server did not return a file URL');
+  return blobUrl;
+}
+
+/**
+ * Upload to one Blossom server, auto-discovering the correct upload path.
+ *
+ * Tries in order:
+ *   1. <server>/upload          — BUD-02 standard (most servers)
+ *   2. <server>/blossom/upload  — Pyramid community relay servers
+ *
+ * Returns the public blob URL on success.
+ */
+async function uploadToServer(
+  serverBase: string,
+  file: File,
+  fileBuffer: ArrayBuffer,
+  fileHash: string,
+  authToken: string,
+): Promise<string> {
+  const normalized = normalizeBlossomUrl(serverBase);
+
+  // Standard BUD-02 path
+  const standardUrl = normalized + '/upload';
+  try {
+    return await doProxyUpload(standardUrl, file, fileBuffer, fileHash, authToken);
+  } catch (err) {
+    const status = (err as Error & { status?: number }).status;
+    // Only fall through to alternative path on 404
+    if (status !== 404) throw err;
+    console.info(`[Blossom] ${normalized}/upload returned 404, trying /blossom/upload (Pyramid server)…`);
+  }
+
+  // Pyramid alternative path: /blossom/upload
+  const pyramidUrl = normalized + '/blossom/upload';
+  return await doProxyUpload(pyramidUrl, file, fileBuffer, fileHash, authToken);
 }
 
 export function useUploadFile() {
@@ -158,7 +173,7 @@ export function useUploadFile() {
       let lastError: Error | null = null;
       for (const server of servers) {
         try {
-          const uploadedUrl = await uploadToBlossomViaProxy(server, file, fileBuffer, fileHash, authToken);
+          const uploadedUrl = await uploadToServer(server, file, fileBuffer, fileHash, authToken);
 
           const tags: string[][] = [
             ['url', uploadedUrl],
@@ -166,11 +181,9 @@ export function useUploadFile() {
             ['m', file.type || 'application/octet-stream'],
             ['size', String(file.size)],
           ];
-
           if (file.type.startsWith('image/')) {
             tags.push(['thumb', `https://wsrv.nl/?url=${encodeURIComponent(uploadedUrl)}&w=800&output=webp&q=80`]);
           }
-
           return tags;
         } catch (err) {
           lastError = err as Error;

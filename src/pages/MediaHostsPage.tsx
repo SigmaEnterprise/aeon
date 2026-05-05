@@ -370,25 +370,44 @@ export function MediaHostsPage() {
       );
       setUploadProgress(60);
 
-      // Route via /blossom-proxy Worker endpoint — same-origin, no CORS issues
-      const proxyUrl = `/blossom-proxy?server=${encodeURIComponent(normalizedHost)}`;
-      const resp = await fetch(proxyUrl, {
-        method: 'PUT',
-        headers: {
-          'Authorization': 'Nostr ' + authB64url,
-          'Content-Type': selectedFile.type || 'application/octet-stream',
-          'Content-Length': String(selectedFile.size),
-          'X-SHA-256': fileHash,
-        },
-        body: fileBuffer,
-        signal: AbortSignal.timeout(120000),
-      });
+      // Route via /blossom-proxy Worker endpoint — same-origin, no CORS issues.
+      // Try standard /upload first, then /blossom/upload for Pyramid servers.
+      const doProxyPut = async (uploadUrl: string): Promise<Response> => {
+        return fetch(`/blossom-proxy?url=${encodeURIComponent(uploadUrl)}`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': 'Nostr ' + authB64url,
+            'Content-Type': selectedFile!.type || 'application/octet-stream',
+            'Content-Length': String(selectedFile!.size),
+            'X-SHA-256': fileHash,
+          },
+          body: fileBuffer,
+          signal: AbortSignal.timeout(120000),
+        });
+      };
+
+      let resp = await doProxyPut(normalizedHost + '/upload');
+
+      // Auto-discover Pyramid servers: /blossom/upload fallback on 404
+      if (resp.status === 404) {
+        console.info('[MediaHosts] /upload returned 404, trying /blossom/upload (Pyramid server)…');
+        resp = await doProxyPut(normalizedHost + '/blossom/upload');
+      }
 
       setUploadProgress(85);
 
       if (!resp.ok) {
         const reason = resp.headers.get('X-Reason');
-        const errText = reason ?? await resp.text().catch(() => `HTTP ${resp.status}`);
+        let errText = reason ?? '';
+        if (!errText) {
+          const body = await resp.text().catch(() => '');
+          try {
+            const json = JSON.parse(body) as { message?: string; error?: string };
+            errText = json.message ?? json.error ?? `HTTP ${resp.status}`;
+          } catch {
+            errText = body.trim() && !body.trim().startsWith('<') ? body.slice(0, 200) : `HTTP ${resp.status}`;
+          }
+        }
         throw new Error(`Upload failed (HTTP ${resp.status}): ${errText}`);
       }
 

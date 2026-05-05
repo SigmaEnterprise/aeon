@@ -6,17 +6,19 @@
  * server-side, bypassing browser CORS restrictions.
  *
  * Why a proxy is needed:
- *   All major Blossom servers (blossom.nostr.build, blossom.band,
- *   cdn.satellite.earth, etc.) do not include Access-Control-Allow-Origin
+ *   All major Blossom servers do not include Access-Control-Allow-Origin
  *   headers on their OPTIONS preflight or PUT responses. Browsers block every
  *   direct upload attempt from cross-origin pages. Routing through this
  *   same-origin Worker endpoint eliminates the CORS issue entirely.
  *
- * Endpoint: PUT /blossom-proxy?server=<encoded-server-url>
- *   - Forwards the entire request body to <server>/upload
- *   - Passes Authorization, Content-Type, X-SHA-256 headers through
+ * Endpoint: PUT /blossom-proxy?url=<encoded-full-upload-url>
+ *   - Forwards the entire request body to the full target URL
+ *   - Passes Authorization, Content-Type, X-SHA-256, Content-Length through
  *   - Returns the Blossom server's JSON response (BlobDescriptor)
- *   - CORS headers are added so the browser accepts the response
+ *   - Injects CORS headers so the browser accepts the response
+ *
+ * The ?url= parameter is the full upload URL (e.g. https://server.com/upload
+ * or https://server.com/blossom/upload for Pyramid servers).
  */
 
 interface Env {
@@ -41,33 +43,45 @@ export default {
 
     // ── Blossom upload proxy ──────────────────────────────────────────────
     if (url.pathname === '/blossom-proxy' && request.method === 'PUT') {
+      // Accept ?url= (full URL) — preferred
+      // Also still accept legacy ?server= (base URL, appends /upload) for compatibility
+      const urlParam = url.searchParams.get('url');
       const serverParam = url.searchParams.get('server');
-      if (!serverParam) {
+
+      let uploadUrl: string;
+
+      if (urlParam) {
+        try {
+          uploadUrl = decodeURIComponent(urlParam);
+        } catch {
+          return new Response(
+            JSON.stringify({ error: 'Invalid ?url= parameter' }),
+            { status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+          );
+        }
+      } else if (serverParam) {
+        try {
+          uploadUrl = decodeURIComponent(serverParam).replace(/\/+$/, '') + '/upload';
+        } catch {
+          return new Response(
+            JSON.stringify({ error: 'Invalid ?server= parameter' }),
+            { status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
+          );
+        }
+      } else {
         return new Response(
-          JSON.stringify({ error: 'Missing ?server= parameter' }),
+          JSON.stringify({ error: 'Missing ?url= parameter' }),
           { status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
         );
       }
 
-      let targetServer: string;
-      try {
-        targetServer = decodeURIComponent(serverParam).replace(/\/+$/, '');
-      } catch {
+      // Only allow https:// targets
+      if (!uploadUrl.startsWith('https://')) {
         return new Response(
-          JSON.stringify({ error: 'Invalid server URL' }),
+          JSON.stringify({ error: 'Upload URL must use https://' }),
           { status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
         );
       }
-
-      // Only allow https:// targets — never internal/private addresses
-      if (!targetServer.startsWith('https://')) {
-        return new Response(
-          JSON.stringify({ error: 'Server must use https://' }),
-          { status: 400, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }
-        );
-      }
-
-      const uploadUrl = targetServer + '/upload';
 
       // Forward relevant headers to the Blossom server
       const forwardHeaders = new Headers();
@@ -95,16 +109,11 @@ export default {
         );
       }
 
-      // Forward the Blossom server's response back to the browser,
-      // injecting CORS headers so the browser accepts it.
+      // Forward the Blossom server's response back with CORS headers injected
       const responseBody = await blossomResponse.arrayBuffer();
       const responseHeaders = new Headers(CORS_HEADERS);
       const upstreamContentType = blossomResponse.headers.get('Content-Type');
-      if (upstreamContentType) {
-        responseHeaders.set('Content-Type', upstreamContentType);
-      } else {
-        responseHeaders.set('Content-Type', 'application/json');
-      }
+      responseHeaders.set('Content-Type', upstreamContentType ?? 'application/json');
 
       return new Response(responseBody, {
         status: blossomResponse.status,
