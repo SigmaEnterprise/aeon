@@ -390,7 +390,6 @@ const ImageUploadField: React.FC<ImageUploadFieldProps> = ({
   previewType,
   onUpload,
 }) => {
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const previewUrl = field.value || '';
   const isGif = isAnimatedGif(previewUrl);
 
@@ -409,29 +408,27 @@ const ImageUploadField: React.FC<ImageUploadFieldProps> = ({
         </FormControl>
 
         <div className="flex items-start gap-3">
-          {/* Upload button */}
-          <div>
+          {/* Upload button — label wraps the hidden input for maximum iOS compatibility.
+              iOS Safari ignores programmatic .click() on display:none inputs, but
+              a <label> directly wrapping the input always opens the file picker. */}
+          <label className="cursor-pointer">
             <input
               type="file"
               ref={fileInputRef}
-              accept="image/*"
-              className="hidden"
+              accept="image/*,image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif"
+              className="sr-only"
               onChange={e => {
                 const file = e.target.files?.[0];
                 if (file) { onUpload(file); e.target.value = ''; }
               }}
             />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-8 gap-2 text-xs"
-              onClick={() => fileInputRef.current?.click()}
+            <span
+              className="inline-flex items-center gap-2 h-8 px-3 text-xs font-medium rounded-md border border-input bg-background hover:bg-accent hover:text-accent-foreground transition-colors"
             >
               <Upload className="h-3.5 w-3.5" />
               Upload
-            </Button>
-          </div>
+            </span>
+          </label>
 
           {/* Live preview */}
           {previewUrl && (

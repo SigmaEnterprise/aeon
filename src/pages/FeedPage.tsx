@@ -299,14 +299,23 @@ export function FeedPage() {
                   <Label className="text-xs text-muted-foreground flex items-center gap-1">
                     <Paperclip className="h-3 w-3" />Attach media
                   </Label>
-                  <div className="flex gap-2">
-                    <Input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*,video/*,audio/*"
-                      className="text-xs"
-                      onChange={e => setSelectedFile(e.target.files?.[0] ?? null)}
-                    />
+                  {/* Label wrapping the input is the most reliable pattern on iOS Safari.
+                      display:none / visibility:hidden inputs are ignored by iOS when
+                      triggered programmatically — wrapping with <label> always works. */}
+                  <div className="flex gap-2 items-center">
+                    <label className="cursor-pointer flex-1">
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*,video/*,audio/*,image/heic,image/heif"
+                        className="sr-only"
+                        onChange={e => setSelectedFile(e.target.files?.[0] ?? null)}
+                      />
+                      <span className="flex items-center gap-2 h-9 px-3 w-full rounded-md border border-input bg-background text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors truncate">
+                        <Paperclip className="h-3.5 w-3.5 shrink-0" />
+                        {selectedFile ? selectedFile.name : 'Choose photo or file…'}
+                      </span>
+                    </label>
                     {selectedFile && (
                       <Button variant="ghost" size="sm" className="shrink-0 h-9 px-2"
                         onClick={() => { setSelectedFile(null); if (fileInputRef.current) fileInputRef.current.value = ''; }}>

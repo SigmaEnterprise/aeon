@@ -647,12 +647,18 @@ export function MediaHostsPage() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <Label className="text-xs">File</Label>
-                  <Input
-                    type="file"
-                    accept="image/*,video/*,audio/*"
-                    className="text-xs"
-                    onChange={e => setSelectedFile(e.target.files?.[0] ?? null)}
-                  />
+                  <label className="cursor-pointer block">
+                    <input
+                      type="file"
+                      accept="image/*,video/*,audio/*,image/heic,image/heif"
+                      className="sr-only"
+                      onChange={e => setSelectedFile(e.target.files?.[0] ?? null)}
+                    />
+                    <span className="flex items-center gap-2 h-9 px-3 w-full rounded-md border border-input bg-background text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors truncate">
+                      <Upload className="h-3.5 w-3.5 shrink-0" />
+                      {selectedFile ? selectedFile.name : 'Choose file…'}
+                    </span>
+                  </label>
                   {selectedFile && (
                     <p className="text-xs text-muted-foreground">
                       {selectedFile.name} — {(selectedFile.size / 1024).toFixed(1)} KB

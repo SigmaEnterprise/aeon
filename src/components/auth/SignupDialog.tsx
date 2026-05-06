@@ -295,27 +295,26 @@ const SignupDialog: React.FC<SignupDialogProps> = ({ isOpen, onClose }) => {
                       className='flex-1'
                       disabled={isPublishing}
                     />
-                    <input
-                      type='file'
-                      accept='image/*'
-                      className='hidden'
-                      ref={avatarFileInputRef}
-                      onChange={handleAvatarUpload}
-                    />
-                    <Button
-                      type='button'
-                      variant='outline'
-                      size='icon'
-                      onClick={() => avatarFileInputRef.current?.click()}
-                      disabled={isUploading || isPublishing}
-                      title='Upload avatar image'
-                    >
-                      {isUploading ? (
-                        <div className='w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin' />
-                      ) : (
-                        <Upload className='w-4 h-4' />
-                      )}
-                    </Button>
+                    <label className={`cursor-pointer ${(isUploading || isPublishing) ? 'opacity-50 pointer-events-none' : ''}`}>
+                      <input
+                        type='file'
+                        accept='image/*,image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif'
+                        className='sr-only'
+                        ref={avatarFileInputRef}
+                        onChange={handleAvatarUpload}
+                        disabled={isUploading || isPublishing}
+                      />
+                      <span
+                        className='inline-flex items-center justify-center h-9 w-9 rounded-md border border-input bg-background hover:bg-accent hover:text-accent-foreground transition-colors'
+                        title='Upload avatar image'
+                      >
+                        {isUploading ? (
+                          <div className='w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin' />
+                        ) : (
+                          <Upload className='w-4 h-4' />
+                        )}
+                      </span>
+                    </label>
                   </div>
                 </div>
               </div>
